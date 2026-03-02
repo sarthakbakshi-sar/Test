@@ -4,9 +4,9 @@ Viral Finance Content Machine
 Auto-generates viral X threads and Substack posts from trending finance topics.
 
 Usage:
-  python main.py              # Generate content, save to files
+  python main.py              # Generate content, save to files (no X posting)
   python main.py --post       # Generate + auto-post threads to X
-  python main.py --dry-run    # Show trending topics only, no generation
+  python main.py --dry-run    # Generate and save files, but skip X posting
   python main.py --topics 5   # Generate for top 5 topics (default: 3)
   python main.py --verbose    # Enable debug logging
 """
@@ -46,9 +46,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                # Generate content and save to output/
+  python main.py                # Generate content and save to output/ (no X posting)
   python main.py --post         # Generate + auto-post to X (requires X API keys)
-  python main.py --dry-run      # Preview trending topics without generating content
+  python main.py --dry-run      # Generate and save content, but skip X posting
   python main.py --topics 5     # Generate for top 5 topics instead of 3
   python main.py --verbose      # Show debug logging
         """,
@@ -56,7 +56,7 @@ Examples:
     parser.add_argument("--post", action="store_true", default=False,
                         help="Auto-post generated threads to X (requires X API credentials in .env)")
     parser.add_argument("--dry-run", action="store_true", default=False,
-                        help="Fetch and display trending topics only — no content generation")
+                        help="Generate and save content to files, but skip posting to X")
     parser.add_argument("--topics", type=int, default=3, metavar="N",
                         help="Number of top topics to generate content for (default: 3)")
     parser.add_argument("--verbose", action="store_true", default=False,
@@ -135,11 +135,6 @@ def main():
     top_topics = pick_top_topics(all_topics, n=args.topics)
     print_topics_table(top_topics)
 
-    if args.dry_run:
-        console.print("[bold yellow]Dry run complete.[/bold yellow] No content generated.")
-        console.print("Re-run without [cyan]--dry-run[/cyan] to generate content.")
-        return
-
     # ── Phase 3: Generate ───────────────────────────────────────────
     console.print("[bold]Phase 3:[/bold] Generating content with Claude...\n")
 
@@ -196,7 +191,7 @@ def main():
     console.print()
 
     # ── Phase 5: Post to X (optional) ──────────────────────────────
-    if args.post and generated_threads:
+    if args.post and not args.dry_run and generated_threads:
         console.print("[bold]Phase 5:[/bold] Posting to X...\n")
 
         for thread in generated_threads:
@@ -233,7 +228,7 @@ def main():
         "[cyan]output/threads/[/cyan] and [cyan]output/newsletters/[/cyan] for your content."
     )
 
-    if not args.post:
+    if not args.post or args.dry_run:
         console.print("\n[dim]To auto-post threads to X, add your X API keys to .env and run with [cyan]--post[/cyan][/dim]")
 
 
