@@ -19,7 +19,7 @@ Run: pip install yfinance pandas numpy scipy requests
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import urllib.request, io, json, time as time_module
+import urllib.request, urllib.parse, io, json, time as time_module
 from scipy import stats
 from datetime import datetime, time, timedelta
 import warnings
@@ -125,7 +125,7 @@ def load_twelve_data(interval="15min"):
             base = (f"https://api.twelvedata.com/time_series?"
                     f"symbol=XAU/USD&interval={interval}"
                     f"&outputsize=5000&order=DESC&apikey={TD_KEY}")
-            url = base + (f"&end_date={end_date}" if end_date else "")
+            url = base + (f"&end_date={urllib.parse.quote(end_date)}" if end_date else "")
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             raw = json.loads(urllib.request.urlopen(req, timeout=30).read())
 
