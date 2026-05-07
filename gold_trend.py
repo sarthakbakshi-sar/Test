@@ -40,7 +40,7 @@ COMMISSION   = 0.00008
 
 # API keys — get free at alphavantage.co and twelvedata.com
 AV_KEY  = "YOUR_ALPHA_VANTAGE_KEY"   # free at alphavantage.co
-TD_KEY  = "YOUR_TWELVE_DATA_KEY"     # free at twelvedata.com
+TD_KEY  = "06f050cd7d9940a895f9461e7f0ff7e3"
 
 # NY session: 13:30-17:00 UTC (17:30-21:00 Dubai)
 SESSIONS = [("NY", time(13,30), time(17,0))]
@@ -105,25 +105,71 @@ def load_alpha_vantage(interval="15min"):
         return None
 
 def load_twelve_data(interval="15min"):
-    """Twelve Data — free key from twelvedata.com (800 req/day)."""
-    if TD_KEY == "YOUR_TWELVE_DATA_KEY":
+    """
+    Twelve Data — paginated loader for maximum history.
+    Free tier: 800 req/day. outputsize=5000 bars per call.
+    Paginates backwards to get as much history as possible.
+    """
+    if not TD_KEY or TD_KEY == "YOUR_TWELVE_DATA_KEY":
         return None
-    try:
-        url = (f"https://api.twelvedata.com/time_series?"
-               f"symbol=XAU/USD&interval={interval}&outputsize=5000&apikey={TD_KEY}")
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        raw = json.loads(urllib.request.urlopen(req, timeout=20).read())
-        if 'values' not in raw:
-            return None
-        df = pd.DataFrame(raw['values'])
-        df.index = pd.to_datetime(df['datetime'])
-        df = df[['open','high','low','close','volume']].copy()
-        for c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-        df.sort_index(inplace=True)
-        return df if len(df) > 100 else None
-    except:
+
+    all_frames = []
+    end_date   = None
+    max_pages  = 6    # 6 x 5000 bars = 30,000 bars ~ 312 days of 15min
+    page       = 0
+
+    print(f"  Twelve Data: fetching {interval} XAU/USD (paginating)...")
+
+    while page < max_pages:
+        try:
+            base = (f"https://api.twelvedata.com/time_series?"
+                    f"symbol=XAU/USD&interval={interval}"
+                    f"&outputsize=5000&order=DESC&apikey={TD_KEY}")
+            url = base + (f"&end_date={end_date}" if end_date else "")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            raw = json.loads(urllib.request.urlopen(req, timeout=30).read())
+
+            if 'values' not in raw or not raw['values']:
+                break
+            if 'code' in raw and raw['code'] != 200:
+                print(f"  Twelve Data error: {raw.get('message','unknown')}")
+                break
+
+            df = pd.DataFrame(raw['values'])
+            df.index = pd.to_datetime(df['datetime'])
+            cols = [c for c in ['open','high','low','close','volume'] if c in df.columns]
+            df = df[cols].copy()
+            for c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+            df.dropna(inplace=True)
+
+            if len(df) == 0:
+                break
+
+            all_frames.append(df)
+            oldest = df.index.min()
+            end_date = (oldest - pd.Timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"    Page {page+1}: {len(df)} bars | oldest: {oldest.date()}")
+            page += 1
+
+            # Rate limit: free tier allows ~8 requests/minute
+            if page < max_pages:
+                time_module.sleep(8)
+
+        except Exception as e:
+            print(f"  Twelve Data error on page {page+1}: {e}")
+            break
+
+    if not all_frames:
         return None
+
+    result = pd.concat(all_frames)
+    result = result[~result.index.duplicated(keep='first')]
+    result.sort_index(inplace=True)
+    if 'volume' not in result.columns:
+        result['volume'] = 1000.0
+    print(f"  Total: {len(result)} bars | {result.index[0].date()} → {result.index[-1].date()}")
+    return result if len(result) > 100 else None
 
 def load_yfinance(interval="15m", period="60d"):
     """yfinance — 15m limited to 60d, 1h goes back 730d."""
