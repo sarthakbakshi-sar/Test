@@ -505,16 +505,30 @@ def backtest(df, label):
 #  RUN ON ALL AVAILABLE DATASETS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Short-only: only fire when macro/trend says SHORT
+# Force all bars to SHORT mode to extract pure short signal edge
+def backtest_short_only(df, label):
+    d2 = df.copy()
+    d2['trend_dir'] = 'SHORT'
+    d2['trend_str'] = 'FORCED_SHORT'
+    return backtest(d2, label)
+
 results = []
 for (interval, source, raw_df) in datasets:
     print(f"\nProcessing {interval} data ({source})...")
     df = build_indicators(raw_df)
-    r  = backtest(df, f"{interval} | {source}")
-    if r:
-        results.append(r)
-        print(f"  → {r['n']} trades | WR {r['wr']*100:.1f}% | ROI {r['roi']:+.1f}%")
-    else:
-        print(f"  → No trades taken")
+
+    # Run SHORT-ONLY
+    rs = backtest_short_only(df, f"{interval} SHORT-ONLY | {source}")
+    if rs:
+        results.append(rs)
+        print(f"  SHORT-ONLY → {rs['n']} trades | WR {rs['wr']*100:.1f}% | ROI {rs['roi']:+.1f}%")
+
+    # Run FULL trend system for comparison
+    rf = backtest(df, f"{interval} FULL | {source}")
+    if rf:
+        results.append(rf)
+        print(f"  FULL       → {rf['n']} trades | WR {rf['wr']*100:.1f}% | ROI {rf['roi']:+.1f}%")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PRINT RESULTS
