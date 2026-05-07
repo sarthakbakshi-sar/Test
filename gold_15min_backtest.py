@@ -39,15 +39,16 @@ ATR_PERIOD   = 14         # ATR lookback
 EMA_FAST     = 9
 EMA_SLOW     = 21
 VWAP_SIG_THR = 1.2        # VWAP deviation threshold in σ
-MIN_SIGNALS  = 2          # minimum confirming signals to enter
-LOOKBACK     = "60d"      # yfinance 15m data max 60 days
+MIN_SIGNALS  = 2          # minimum confirming signals — test 3 if WR too low
+LOOKBACK     = "60d"       # yfinance lookback — need 200+ trades
 COMMISSION   = 0.00008    # 0.008% per side (gold futures typical)
 
 # Dubai session windows in UTC
 # London open: 08:00-12:00 UTC  (12:00-16:00 Dubai)
 # NY open:     13:30-17:00 UTC  (17:30-21:00 Dubai)
+# NY session only — London showed 32.3% WR vs NY at 50%
+# NY open: 13:30-17:00 UTC (17:30-21:00 Dubai)
 SESSIONS = [
-    ("London", time(8, 0),  time(12, 0)),
     ("NY",     time(13,30), time(17, 0)),
 ]
 
@@ -129,7 +130,7 @@ macro['score_z'] = macro['score_z'].clip(-2, 2) / 2
 
 # Macro verdict: >0.15 = LONG day, <-0.15 = SHORT day, else FLAT
 macro['bias'] = macro['score_z'].apply(
-    lambda x: 'LONG' if x > 0.15 else ('SHORT' if x < -0.15 else 'FLAT')
+    lambda x: 'LONG' if x > 0.05 else ('SHORT' if x < -0.05 else 'FLAT')
 )
 
 bias_counts = macro['bias'].value_counts()
@@ -349,8 +350,11 @@ for i in range(len(df)):
         if row['go_long']:
             tp_px = cp + atr * TP_ATR_MULT
             sl_px = cp - atr * SL_ATR_MULT
-            risk_per_unit = cp - sl_px
-            size_mult = (equity * RISK_PCT) / (risk_per_unit + 1e-10) / equity
+            risk_per_unit = cp - sl_px                        # $ per oz
+            risk_dollars  = equity * RISK_PCT                  # $ at risk
+            oz            = risk_dollars / (risk_per_unit + 1e-10)
+            # size_mult = fraction of equity this position represents
+            size_mult     = (oz * cp) / equity                 # position value / equity
             in_trade = True
             entry = {
                 'time':    idx, 'bar_idx': i, 'price': cp,
@@ -358,13 +362,15 @@ for i in range(len(df)):
                 'atr':     atr, 'session': sess,
                 'bias':    row['macro_bias'],
                 'n_sigs':  row['long_sigs'],
-                'size_mult': min(size_mult, 2.0),  # cap at 2x
+                'size_mult': min(size_mult, 5.0),  # cap at 5x leverage
             }
         elif row['go_short']:
             tp_px = cp - atr * TP_ATR_MULT
             sl_px = cp + atr * SL_ATR_MULT
             risk_per_unit = sl_px - cp
-            size_mult = (equity * RISK_PCT) / (risk_per_unit + 1e-10) / equity
+            risk_dollars  = equity * RISK_PCT
+            oz            = risk_dollars / (risk_per_unit + 1e-10)
+            size_mult     = (oz * cp) / equity
             in_trade = True
             entry = {
                 'time':    idx, 'bar_idx': i, 'price': cp,
@@ -372,7 +378,7 @@ for i in range(len(df)):
                 'atr':     atr, 'session': sess,
                 'bias':    row['macro_bias'],
                 'n_sigs':  row['short_sigs'],
-                'size_mult': min(size_mult, 2.0),
+                'size_mult': min(size_mult, 5.0),
             }
 
 # ── STEP 6: RESULTS ───────────────────────────────────────────────────────────
