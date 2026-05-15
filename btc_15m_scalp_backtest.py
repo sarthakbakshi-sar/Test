@@ -33,7 +33,7 @@ warnings.filterwarnings('ignore')
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 ACCOUNT      = 10000.0
 RISK_PCT     = 0.03      # 3% risk per trade (aggressive for your target)
-MAX_SL_PCT   = 0.004     # 0.4% max stop loss — skip trade if wider
+MAX_SL_PCT   = 0.008     # 0.8% max stop loss — wider for ATR-based SL
 TP1_MULT     = 1.5       # TP1 = 1.5x SL distance
 TP2_MULT     = 2.5       # TP2 = 2.5x SL distance
 TP1_CLOSE    = 0.60      # close 60% at TP1
@@ -56,7 +56,7 @@ DUBAI_CLOSE  = 18
 TD_KEY = "06f050cd7d9940a895f9461e7f0ff7e3"   # your Twelve Data key
 
 print("="*68)
-print("  BTC 15-MIN SCALPING SYSTEM — BACKTEST")
+print("  BTC 15-MIN SCALPING SYSTEM v2 — BACKTEST\n  Fixes: ATR-SL + VWAP/Swing only + 1h trend filter")
 print("  5-condition entry | Split exit (60/40) | Dubai window")
 print("="*68)
 
@@ -200,6 +200,28 @@ print(f"\nData loaded: {len(df)} bars | {df.index[0].date()} → {df.index[-1].d
 print(f"Price range: ${df['close'].min():,.0f} – ${df['close'].max():,.0f}")
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  FIX 3: 1H TREND FILTER
+#  Proved at p=0.006 — only trade in direction of 1h 50 EMA trend
+# ══════════════════════════════════════════════════════════════════════════════
+print('\nLoading 1h trend filter...')
+try:
+    df_1h = yf.download('BTC-USD', period='2y', interval='1h', progress=False)
+    df_1h.columns = [c[0].lower() for c in df_1h.columns]
+    df_1h.index = pd.to_datetime(df_1h.index).tz_localize(None) if df_1h.index.tz is None \
+                  else pd.to_datetime(df_1h.index).tz_convert(None)
+    df_1h['ema50_1h'] = df_1h['close'].ewm(span=50, adjust=False).mean()
+    df_1h['trend_1h'] = np.where(df_1h['close'] > df_1h['ema50_1h'], 'LONG', 'SHORT')
+    # Forward fill to 15-min bars
+    trend_series = df_1h['trend_1h'].reindex(df.index, method='ffill')
+    df['trend_1h'] = trend_series.fillna('LONG')
+    long_pct  = (df['trend_1h']=='LONG').mean()*100
+    short_pct = (df['trend_1h']=='SHORT').mean()*100
+    print(f'  1h trend: LONG {long_pct:.1f}% | SHORT {short_pct:.1f}% of bars')
+except Exception as e:
+    print(f'  1h trend failed ({e}) — using no filter')
+    df['trend_1h'] = 'LONG'
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  INDICATORS
 # ══════════════════════════════════════════════════════════════════════════════
 print("\nComputing indicators...")
@@ -243,7 +265,9 @@ df['at_sw_lo'] = (df['close'] - df['swing_lo']).abs() / df['close'] < AT_LEVEL_P
 df['rn']     = (df['close'] / RN_GRID).round() * RN_GRID
 df['at_rn']  = (df['close'] - df['rn']).abs() / df['close'] < AT_LEVEL_PCT
 
-df['at_level'] = df['at_vwap'] | df['at_sw_hi'] | df['at_sw_lo'] | df['at_rn']
+# FIX 2: Round numbers removed — only VWAP and swing levels
+# Round numbers showed worst WR (31.5%) — removing them
+df['at_level'] = df['at_vwap'] | df['at_sw_hi'] | df['at_sw_lo']
 
 # Session / Dubai window
 df['utc_hour'] = df.index.hour
@@ -297,24 +321,26 @@ df = detect_patterns(df)
 
 # LONG: all 5 conditions
 df['long_cond'] = (
-    df['uptrend']    &   # 1. trend
+    df['uptrend']    &      # 1. 15m trend
     df['trend_clear']&
-    df['at_level']   &   # 2. level
-    df['bull_pat']   &   # 3. pattern
-    df['vol_ok']     &   # 4. volume
-    (df['rsi'] >= 35) &  # 5. RSI
+    (df['trend_1h']=='LONG') &  # FIX 3: 1h trend must agree
+    df['at_level']   &      # 2. level
+    df['bull_pat']   &      # 3. pattern
+    df['vol_ok']     &      # 4. volume
+    (df['rsi'] >= 35) &     # 5. RSI
     (df['rsi'] <= 60) &
     df['in_dubai']
 )
 
 # SHORT: all 5 conditions
 df['short_cond'] = (
-    ~df['uptrend']   &   # 1. trend
+    ~df['uptrend']   &     # 1. 15m trend
     df['trend_clear']&
-    df['at_level']   &   # 2. level
-    df['bear_pat']   &   # 3. pattern
-    df['vol_ok']     &   # 4. volume
-    (df['rsi'] >= 40) &  # 5. RSI
+    (df['trend_1h']=='SHORT') &  # FIX 3: 1h trend must agree
+    df['at_level']   &     # 2. level
+    df['bear_pat']   &     # 3. pattern
+    df['vol_ok']     &     # 4. volume
+    (df['rsi'] >= 40) &    # 5. RSI
     (df['rsi'] <= 65) &
     df['in_dubai']
 )
@@ -413,12 +439,14 @@ for i in range(len(df)):
     # ── ENTRY ──────────────────────────────────────────────────────────────────
     if not in_trade:
         if row['long_cond']:
-            sl_px  = row['low']
-            sl_pct = (cp - sl_px) / cp
+            # FIX 1: ATR-based SL — outside the noise
+            sl_dist= atr * 1.0           # 1x ATR below entry
+            sl_px  = cp - sl_dist
+            sl_pct = sl_dist / cp
             if sl_pct > MAX_SL_PCT or sl_pct <= 0:
-                continue  # SL too wide or zero — skip
-            tp1_px = cp + (cp - sl_px) * TP1_MULT
-            tp2_px = cp + (cp - sl_px) * TP2_MULT
+                continue
+            tp1_px = cp + sl_dist * TP1_MULT
+            tp2_px = cp + sl_dist * TP2_MULT
             risk_usd = equity * RISK_PCT
             oz     = risk_usd / (cp * sl_pct)
             sm     = min((oz * cp) / equity, 5.0)
@@ -434,12 +462,13 @@ for i in range(len(df)):
                          in_dubai_at_entry=row['in_dubai'])
 
         elif row['short_cond']:
-            sl_px  = row['high']
-            sl_pct = (sl_px - cp) / cp
+            sl_dist= atr * 1.0
+            sl_px  = cp + sl_dist
+            sl_pct = sl_dist / cp
             if sl_pct > MAX_SL_PCT or sl_pct <= 0:
                 continue
-            tp1_px = cp - (sl_px - cp) * TP1_MULT
-            tp2_px = cp - (sl_px - cp) * TP2_MULT
+            tp1_px = cp - sl_dist * TP1_MULT
+            tp2_px = cp - sl_dist * TP2_MULT
             risk_usd = equity * RISK_PCT
             oz     = risk_usd / (cp * sl_pct)
             sm     = min((oz * cp) / equity, 5.0)
