@@ -1,0 +1,4 @@
+time,dir,level,entry,exit,score,t1hit,pnl,eq,xt,bars,month
+2025-05-22 14:30,LONG,vwap+prev_h,110941.19,110700.46,6,False,-108.79,9891.21,SL,1,2025-05
+2025-11-02 14:45,SHORT,vwap+prev_h,110409.91,110331.02,5,False,6.51,9897.71,SL,1,2025-11
+2026-01-18 15:00,SHORT,vwap+prev_l,94975.91,95038.32,5,False,-47.79,9849.92,SL,2,2026-01
