@@ -105,18 +105,19 @@ print(f"\n{'='*68}")
 print(f"  TEST 1: Forward gold returns by macro score")
 print(f"{'='*68}")
 
-print(f"\n  {'Score':>8} {'Days':>6} {'1d avg':>9} {'3d avg':>9} {'5d avg':>9} {'5d WR':>8}")
-print(f"  {'─'*54}")
+print(f"\n  {'Score':>8} {'Days':>6} {'1d avg':>9} {'1d WR':>8} {'3d avg':>9} {'5d avg':>9} {'5d WR':>8}")
+print(f"  {'─'*62}")
 for raw in [-3, -1, 1, 3]:
     sub = df[df['macro_raw'] == raw]
     if len(sub) == 0: continue
     score10 = raw/3*10
     r1  = sub['fwd_1'].mean()
+    wr1 = (sub['fwd_1'] > 0).mean()*100
     r3  = sub['fwd_3'].mean()
     r5  = sub['fwd_5'].mean()
     wr5 = (sub['fwd_5'] > 0).mean()*100
     flag = " ←bullish" if raw>0 else " ←bearish" if raw<0 else ""
-    print(f"  {score10:>+7.1f} {len(sub):>6} {r1:>+8.2f}% {r3:>+8.2f}% {r5:>+8.2f}% {wr5:>6.1f}%{flag}")
+    print(f"  {score10:>+7.1f} {len(sub):>6} {r1:>+8.2f}% {wr1:>6.1f}% {r3:>+8.2f}% {r5:>+8.2f}% {wr5:>6.1f}%{flag}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TEST 2 — Correlation between score and forward return
