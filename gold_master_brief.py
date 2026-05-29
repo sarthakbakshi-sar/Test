@@ -18,7 +18,7 @@ WEIGHTING LOGIC (honest):
   Event risk is a GATE, not a score → can veto trading entirely
 
 Run before each session (5:15pm Dubai):
-  pip install requests pandas yfinance feedparser
+  pip install requests pandas yfinance
   python gold_master_brief.py
 
 No API keys required.
@@ -33,11 +33,7 @@ import yfinance as yf
 import warnings
 warnings.filterwarnings('ignore')
 
-try:
-    import feedparser
-    HAS_FEED = True
-except ImportError:
-    HAS_FEED = False
+from email.utils import parsedate_to_datetime
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 DUBAI_OFFSET     = 4
@@ -170,23 +166,31 @@ def get_macro():
 
 def get_news_score():
     print("\n[3/3] News sentiment...")
-    if not HAS_FEED:
-        print("  feedparser not installed — skipping news (pip install feedparser)")
-        return 0, []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     heads = []
     for name, url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:30]:
-                pub = entry.get('published_parsed') or entry.get('updated_parsed')
+            r = requests.get(url, timeout=15, headers={"User-Agent":"Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+            root = ET.fromstring(r.content)
+            for item in root.iter('item'):
+                title = (item.findtext('title') or '').strip()
+                desc  = (item.findtext('description') or '')[:200]
+                pub   = item.findtext('pubDate') or ''
                 if pub:
-                    if datetime(*pub[:6], tzinfo=timezone.utc) < cutoff: continue
-                title = entry.get('title','')
-                summ  = entry.get('summary','')[:200]
+                    try:
+                        pub_dt = parsedate_to_datetime(pub)
+                        if pub_dt.tzinfo is None:
+                            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                        if pub_dt < cutoff:
+                            continue
+                    except Exception:
+                        pass
                 heads.append({'source':name,'title':title,
-                              'text':(title+' '+summ).lower()})
-        except: pass
+                              'text':(title+' '+desc).lower()})
+        except Exception:
+            pass
     print(f"  {len(heads)} headlines in last {LOOKBACK_HOURS}h")
     bull = bear = 0
     relevant = []
