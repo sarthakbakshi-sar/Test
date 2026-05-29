@@ -140,7 +140,8 @@ def get_macro():
         out['gold_px']    = float(g['close'].iloc[-1])
         out['gold_ema50'] = float(g['close'].ewm(span=50, adjust=False).mean().iloc[-1])
         out['gold_trend'] = 'LONG' if out['gold_px'] > out['gold_ema50'] else 'SHORT'
-        print(f"  Gold ${out['gold_px']:,.0f} | 50EMA ${out['gold_ema50']:,.0f} | {out['gold_trend']}")
+        out['gold_mom5']  = float((g['close'].iloc[-1] / g['close'].iloc[-6] - 1) * 100)
+        print(f"  Gold ${out['gold_px']:,.0f} | 50EMA ${out['gold_ema50']:,.0f} | {out['gold_trend']} | 5d mom {out['gold_mom5']:+.2f}%")
     except Exception as e: print(f"  gold failed: {e}")
     try:
         dxy = yf.download("DX-Y.NYB", period="10d", interval="1d", progress=False)
@@ -212,7 +213,7 @@ events       = get_calendar()
 macro        = get_macro()
 news_score, relevant = get_news_score()
 
-# --- Macro score: -3..+3 → normalize to -10..+10 ---
+# --- Macro score: -4..+4 → normalize to -10..+10 ---
 macro_raw = 0
 macro_reasons = []
 if macro.get('gold_trend') == 'LONG':
@@ -227,7 +228,12 @@ if macro.get('dxy_dir') == 'DOWN':
     macro_raw += 1; macro_reasons.append(f"Dollar down {macro.get('dxy_chg',0):+.2f}% (+)")
 elif macro.get('dxy_dir') == 'UP':
     macro_raw -= 1; macro_reasons.append(f"Dollar up {macro.get('dxy_chg',0):+.2f}% (−)")
-macro_norm = macro_raw / 3 * 10   # -10..+10
+mom = macro.get('gold_mom5', 0)
+if mom > 0:
+    macro_raw += 1; macro_reasons.append(f"Gold 5d momentum {mom:+.2f}% (+)")
+else:
+    macro_raw -= 1; macro_reasons.append(f"Gold 5d momentum {mom:+.2f}% (−)")
+macro_norm = macro_raw / 4 * 10   # -10..+10
 
 # --- Combined score ---
 combined = round(MACRO_WEIGHT * macro_norm + NEWS_WEIGHT * news_score, 1)
