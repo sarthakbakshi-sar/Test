@@ -141,8 +141,16 @@ def get_macro():
         out['gold_ema50'] = float(g['close'].ewm(span=50, adjust=False).mean().iloc[-1])
         out['gold_trend'] = 'LONG' if out['gold_px'] > out['gold_ema50'] else 'SHORT'
         out['gold_mom5']  = float((g['close'].iloc[-1] / g['close'].iloc[-6] - 1) * 100)
+        out['gold_ret1']  = float((g['close'].iloc[-1] / g['close'].iloc[-2] - 1) * 100)
         print(f"  Gold ${out['gold_px']:,.0f} | 50EMA ${out['gold_ema50']:,.0f} | {out['gold_trend']} | 5d mom {out['gold_mom5']:+.2f}%")
     except Exception as e: print(f"  gold failed: {e}")
+    try:
+        gdx = yf.download("GDX", period="10d", interval="1d", progress=False)
+        gdx.columns = [c[0].lower() for c in gdx.columns]
+        out['gdx_ret1'] = float((gdx['close'].iloc[-1] / gdx['close'].iloc[-2] - 1) * 100)
+        out['gdx_lead'] = 'LEADING' if out['gdx_ret1'] > out.get('gold_ret1', 0) else 'LAGGING'
+        print(f"  GDX {out['gdx_ret1']:+.2f}% vs Gold {out.get('gold_ret1',0):+.2f}% → miners {out['gdx_lead']}")
+    except Exception as e: print(f"  gdx failed: {e}")
     try:
         dxy = yf.download("DX-Y.NYB", period="10d", interval="1d", progress=False)
         dxy.columns = [c[0].lower() for c in dxy.columns]
@@ -233,7 +241,12 @@ if mom > 0:
     macro_raw += 1; macro_reasons.append(f"Gold 5d momentum {mom:+.2f}% (+)")
 else:
     macro_raw -= 1; macro_reasons.append(f"Gold 5d momentum {mom:+.2f}% (−)")
-macro_norm = macro_raw / 4 * 10   # -10..+10
+if macro.get('gdx_lead') == 'LEADING':
+    macro_raw += 1; macro_reasons.append(f"Miners leading gold {macro.get('gdx_ret1',0):+.2f}% vs {macro.get('gold_ret1',0):+.2f}% (+)")
+elif macro.get('gdx_lead') == 'LAGGING':
+    macro_raw -= 1; macro_reasons.append(f"Miners lagging gold {macro.get('gdx_ret1',0):+.2f}% vs {macro.get('gold_ret1',0):+.2f}% (−)")
+n_components = 5 if macro.get('gdx_lead') else 4
+macro_norm = macro_raw / n_components * 10   # -10..+10
 
 # --- Combined score ---
 combined = round(MACRO_WEIGHT * macro_norm + NEWS_WEIGHT * news_score, 1)
