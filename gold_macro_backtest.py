@@ -283,3 +283,55 @@ try:
 
 except Exception as e:
     print(f"  Hourly data failed: {e}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TEST 6 — 1-HOUR WINDOW (13:30–14:30 UTC = first hour of session)
+# ══════════════════════════════════════════════════════════════════════════════
+print(f"\n{'='*68}")
+print(f"  TEST 6: 1-hour window (13:30–14:30 UTC)")
+print(f"  Does the macro score predict the first hour of your session?")
+print(f"{'='*68}")
+
+try:
+    rows1h = []
+    for date, score_row in df.iterrows():
+        d = date.date()
+        open_ts  = pd.Timestamp(d) + pd.Timedelta(hours=13, minutes=30)
+        close_ts = pd.Timestamp(d) + pd.Timedelta(hours=14, minutes=30)
+        candidates = gh.loc[(gh.index >= open_ts) & (gh.index <= open_ts + pd.Timedelta(hours=1))]
+        end_cands  = gh.loc[(gh.index >= close_ts) & (gh.index <= close_ts + pd.Timedelta(hours=1))]
+        if candidates.empty or end_cands.empty:
+            continue
+        p_open  = float(candidates['open'].iloc[0])
+        p_close = float(end_cands['close'].iloc[0])
+        ret = (p_close / p_open - 1) * 100
+        rows1h.append({'date': date, 'macro_raw': score_row['macro_raw'],
+                       'macro_score': score_row['macro_score'], 'sess_ret': ret})
+
+    s1h = pd.DataFrame(rows1h).set_index('date')
+    print(f"  Matched days: {len(s1h)}")
+
+    print(f"\n  {'Score':>8} {'Days':>6} {'1h avg':>10} {'1h WR':>9}")
+    print(f"  {'─'*38}")
+    for raw in [-3, -1, 1, 3]:
+        sub = s1h[s1h['macro_raw'] == raw]
+        if len(sub) == 0: continue
+        score10 = raw/3*10
+        avg = sub['sess_ret'].mean()
+        wr  = (sub['sess_ret'] > 0).mean()*100
+        flag = " ←bullish" if raw>0 else " ←bearish" if raw<0 else ""
+        print(f"  {score10:>+7.1f} {len(sub):>6} {avg:>+9.2f}% {wr:>7.1f}%{flag}")
+
+    corr, p = stats.pearsonr(s1h['macro_score'], s1h['sess_ret'])
+    t, pt   = stats.ttest_1samp(
+        s1h.loc[s1h['macro_raw']>0,'sess_ret'].values.tolist() +
+        (-s1h.loc[s1h['macro_raw']<0,'sess_ret']).values.tolist(), 0)
+    print(f"\n  Correlation (score → 1h return): {corr:+.4f} (p={p:.4f})")
+    print(f"  Trade-with-score p-value: {pt:.4f}  {'✓ SIGNIFICANT' if pt<0.05 else '— not significant'}")
+    if p < 0.05:
+        print(f"\n  ✓ Macro score predicts the first hour of your session.")
+    else:
+        print(f"\n  ✗ Macro score does not predict the first hour.")
+
+except Exception as e:
+    print(f"  1h test failed: {e}")
