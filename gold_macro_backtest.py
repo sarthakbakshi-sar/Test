@@ -220,3 +220,66 @@ print("="*68)
 
 df[['gold','macro_score','macro_raw','fwd_1','fwd_5']].to_csv("gold_macro_backtest.csv")
 print("Saved: gold_macro_backtest.csv")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TEST 5 — 4-HOUR SESSION WINDOW (13:30–17:30 UTC = your Dubai session)
+# ══════════════════════════════════════════════════════════════════════════════
+print(f"\n{'='*68}")
+print(f"  TEST 5: 4-hour session window (13:30–17:30 UTC)")
+print(f"  Does the morning macro score predict YOUR session?")
+print(f"{'='*68}")
+
+print("\nDownloading 2 years of hourly gold data...")
+try:
+    gh = yf.download("GC=F", period="2y", interval="1h", progress=False)
+    gh.columns = [c[0].lower() for c in gh.columns]
+    gh.index = pd.to_datetime(gh.index).tz_localize(None)
+    print(f"  Hourly bars: {len(gh)}")
+
+    SESS_OPEN_H, SESS_OPEN_M   = 13, 30
+    SESS_CLOSE_H, SESS_CLOSE_M = 17, 30
+
+    rows = []
+    for date, score_row in df.iterrows():
+        d = date.date()
+        open_ts  = pd.Timestamp(d) + pd.Timedelta(hours=SESS_OPEN_H,  minutes=SESS_OPEN_M)
+        close_ts = pd.Timestamp(d) + pd.Timedelta(hours=SESS_CLOSE_H, minutes=SESS_CLOSE_M)
+        # find closest bar at or after session open
+        candidates = gh.loc[(gh.index >= open_ts) & (gh.index <= open_ts + pd.Timedelta(hours=1))]
+        end_cands  = gh.loc[(gh.index >= close_ts) & (gh.index <= close_ts + pd.Timedelta(hours=1))]
+        if candidates.empty or end_cands.empty:
+            continue
+        p_open  = float(candidates['open'].iloc[0])
+        p_close = float(end_cands['close'].iloc[0])
+        sess_ret = (p_close / p_open - 1) * 100
+        rows.append({'date': date, 'macro_raw': score_row['macro_raw'],
+                     'macro_score': score_row['macro_score'], 'sess_ret': sess_ret})
+
+    sess = pd.DataFrame(rows).set_index('date')
+    print(f"  Matched session days: {len(sess)}")
+
+    print(f"\n  {'Score':>8} {'Days':>6} {'Sess avg':>10} {'Sess WR':>9}")
+    print(f"  {'─'*38}")
+    for raw in [-3, -1, 1, 3]:
+        sub = sess[sess['macro_raw'] == raw]
+        if len(sub) == 0: continue
+        score10 = raw/3*10
+        avg = sub['sess_ret'].mean()
+        wr  = (sub['sess_ret'] > 0).mean()*100
+        flag = " ←bullish" if raw>0 else " ←bearish" if raw<0 else ""
+        print(f"  {score10:>+7.1f} {len(sub):>6} {avg:>+9.2f}% {wr:>7.1f}%{flag}")
+
+    corr, p = stats.pearsonr(sess['macro_score'], sess['sess_ret'])
+    t, pt   = stats.ttest_1samp(
+        sess.loc[sess['macro_raw']>0,'sess_ret'].values.tolist() +
+        (-sess.loc[sess['macro_raw']<0,'sess_ret']).values.tolist(), 0)
+    print(f"\n  Correlation (score → session return): {corr:+.4f} (p={p:.4f})")
+    print(f"  Trade-with-score p-value: {pt:.4f}  {'✓ SIGNIFICANT' if pt<0.05 else '— not significant'}")
+
+    if p < 0.05:
+        print(f"\n  ✓ Macro score predicts your 4h session direction.")
+    else:
+        print(f"\n  ✗ Macro score does not predict your 4h session.")
+
+except Exception as e:
+    print(f"  Hourly data failed: {e}")
