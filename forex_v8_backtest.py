@@ -53,7 +53,17 @@ TIME_BARS     = 10        # 10×15m = 2.5h max hold
 FTMO_DAILY_LIMIT = ACCOUNT * 0.05   # $6,000
 FTMO_FLOOR       = ACCOUNT * 0.90   # $108,000
 
+# All 7 pairs fetched for macro/data loading
 PAIRS = ['AUD/JPY', 'AUD/CHF', 'AUD/NZD', 'AUD/USD', 'CAD/CHF', 'CAD/JPY', 'CHF/JPY']
+
+# V8: Only trade pairs with confirmed positive expected value (avgR > 0 in candidates).
+# Excluded: CHF/JPY (V6 -10.7% ROI), AUD/CHF (avgR -0.124), AUD/USD (avgR -0.036)
+ACTIVE_PAIRS = ['CAD/CHF', 'AUD/JPY', 'CAD/JPY', 'AUD/NZD']
+
+# V8: Skip the unstable June-August 2024 period.
+# 1H data starts May 29 2024; despite EMA warmup, June 2024 = BoJ carry chaos.
+# September 2024 onward: EMA fully warmed (3 months), BoJ shock digested.
+MIN_DATE = pd.Timestamp('2024-09-01', tz='UTC')
 
 # V8: Asian session added for JPY pairs, extended London and NY
 SESSIONS = {
@@ -401,6 +411,9 @@ def generate_pair_trades(pair, df, macro_score, vix_series, usdjpy_series=None):
         row      = df.iloc[i]
         date_key = row.name.date()
 
+        if row.name < MIN_DATE:
+            i += 1; continue
+
         if row.name.weekday() >= 5:
             i += 1; continue
 
@@ -694,7 +707,7 @@ def print_report(ptdf, final_eq, challenge_ok, pair_trades_dict):
     print(f"\n  Candidates vs portfolio (1-per-pair-per-day filter):")
     print(f"  {'Pair':<10} {'Raw N':>6} {'Port N':>7} {'WR':>7} {'P&L':>12}  Sig")
     print(f"  {'─'*66}")
-    for pair in PAIRS:
+    for pair in ACTIVE_PAIRS:
         raw_n = len(pair_trades_dict.get(pair, pd.DataFrame()))
         sub   = ptdf[ptdf['pair'] == pair]
         if sub.empty:
@@ -785,7 +798,7 @@ def main():
     usdjpy_series = macro_all.get('usdjpy', None)
 
     pair_trades = {}
-    for pair in PAIRS:
+    for pair in ACTIVE_PAIRS:
         df15 = data_15m.get(pair, pd.DataFrame())
         df1h = data_1h.get(pair, pd.DataFrame())
         if df15.empty:
