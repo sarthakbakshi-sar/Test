@@ -56,9 +56,10 @@ FTMO_FLOOR       = ACCOUNT * 0.90   # $108,000
 # All 7 pairs fetched for macro/data loading
 PAIRS = ['AUD/JPY', 'AUD/CHF', 'AUD/NZD', 'AUD/USD', 'CAD/CHF', 'CAD/JPY', 'CHF/JPY']
 
-# V8: Only trade pairs with confirmed positive expected value (avgR > 0 in candidates).
-# Excluded: CHF/JPY (V6 -10.7% ROI), AUD/CHF (avgR -0.124), AUD/USD (avgR -0.036)
-ACTIVE_PAIRS = ['CAD/CHF', 'AUD/JPY', 'CAD/JPY', 'AUD/NZD']
+# V8: Only trade pairs with confirmed positive expected value (avgR > 0 in Sep 2024+ period).
+# Excluded: CHF/JPY (V6 -10.7% ROI), AUD/CHF (avgR -0.124), AUD/USD (avgR -0.036),
+#           AUD/NZD (avgR flips +0.009→-0.108 after Sep 2024, unstable signal)
+ACTIVE_PAIRS = ['CAD/CHF', 'AUD/JPY', 'CAD/JPY']
 
 # V8: Skip the unstable June-August 2024 period.
 # 1H data starts May 29 2024; despite EMA warmup, June 2024 = BoJ carry chaos.
