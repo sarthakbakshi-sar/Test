@@ -1,1 +1,4 @@
 __pycache__/
+forex_cache/
+btc_15m_cache.csv
+*.pyc
