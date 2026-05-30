@@ -447,11 +447,17 @@ def generate_pair_trades(pair, df, macro_score, vix_series, usdjpy_series=None):
         if any(pd.isna(v) for v in [atr, atr_pct, ema9, ema21, vwap, vstd]):
             i += 1; continue
 
-        # ── Filters (V6-identical) ────────────────────────────────────────────
+        # ── Filters ───────────────────────────────────────────────────────────
 
-        if not pd.isna(ema50_1h):
-            if direction == 1  and price < ema50_1h: i += 1; continue
-            if direction == -1 and price > ema50_1h: i += 1; continue
+        # Hard-require 1H EMA warmup. 1H data starts ~May 2024; ema50_1h needs
+        # 50 bars (~6 weeks) to warm up → first valid trade ~Jun 2024.
+        # Without this, Feb-May 2024 trades run with no 1H/4H filter and
+        # blow up the portfolio before the real signal period begins.
+        if pd.isna(ema50_1h) or pd.isna(ema9_4h):
+            i += 1; continue
+
+        if direction == 1  and price < ema50_1h: i += 1; continue
+        if direction == -1 and price > ema50_1h: i += 1; continue
 
         if is_jpy and direction == 1 and usdjpy is not None:
             if jpy_carry_guard(date_key, usdjpy):
