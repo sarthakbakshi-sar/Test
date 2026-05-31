@@ -12,12 +12,10 @@
  *   CAD/JPY  WR 36%  avgR +0.008  1.41/wk  (LONG ONLY — carry trade)
  *
  * DUBAI SESSION WINDOWS (UTC+4):
- *   04:30 – 07:00  ASIAN   → AUD/JPY, CAD/JPY  (Tokyo liquidity)
- *   11:30 – 14:00  LONDON  → All 3 pairs        (primary session)
- *   18:00 – 21:00  NY      → All 3 pairs        (secondary session)
+ *   11:30 – 14:00  LONDON  → All 3 pairs  (primary session)
+ *   18:00 – 21:00  NY      → All 3 pairs  (secondary session)
  *
  * WHEN TO CHECK (Dubai time):
- *   04:15  Pre-Asian    — AUD/JPY & CAD/JPY macro check
  *   11:15  Pre-London   — All pairs, most important check of day
  *   18:00  NY opens     — All pairs evening check
  *   21:00  NY closes    — Manage any open trades
@@ -80,7 +78,6 @@ function setupTrigger() {
       '  G2 = your current MT5 equity\n' +
       '  G3 = equity at start of today\n\n' +
       'Dubai check times:\n' +
-      '  04:15  Pre-Asian (AUD/JPY, CAD/JPY)\n' +
       '  11:15  Pre-London (all pairs)\n' +
       '  18:00  NY opens (all pairs)\n' +
       '  21:00  NY closes (manage open trades)'
@@ -375,10 +372,8 @@ function buildTechnicals(pairKey, bars15, bars1h, nowUtcH) {
     }
   }
 
-  // Session VWAP: pick active session window
-  var activeVwapH = nowUtcH >= SESS_NY.vwap    ? SESS_NY.vwap :
-                    nowUtcH >= SESS_LONDON.vwap ? SESS_LONDON.vwap :
-                    SESS_ASIAN.vwap;
+  // Session VWAP: London or NY only
+  var activeVwapH = nowUtcH >= SESS_NY.vwap ? SESS_NY.vwap : SESS_LONDON.vwap;
   var sv = calcSessionVwap(bars15, activeVwapH);
 
   return {
@@ -422,11 +417,9 @@ function evalSetup(pairKey, macro, tech, nowUtcH, macroData) {
   var price  = tech.price;
   var isJpy  = LONG_ONLY[pairKey];
 
-  // Which sessions are valid for this pair?
+  // Which sessions are valid for this pair? London + NY only
   var inEntry = false, sessName = '';
-  if (pairKey !== 'CADCHF' && nowUtcH >= SESS_ASIAN.open && nowUtcH <= SESS_ASIAN.close) {
-    inEntry = true; sessName = 'ASIAN';
-  } else if (nowUtcH >= SESS_LONDON.open && nowUtcH <= SESS_LONDON.close) {
+  if (nowUtcH >= SESS_LONDON.open && nowUtcH <= SESS_LONDON.close) {
     inEntry = true; sessName = 'LONDON';
   } else if (nowUtcH >= SESS_NY.open && nowUtcH <= SESS_NY.close) {
     // Skip NY on NFP (first Friday of month)
@@ -462,7 +455,7 @@ function evalSetup(pairKey, macro, tech, nowUtcH, macroData) {
   var checks = [
     { label: 'Entry window',         ok: inEntry,
       note: inEntry ? sessName + ' session active' :
-            'Outside all entry windows' + (pairKey === 'CADCHF' ? ' (London/NY only)' : ' (Asian/London/NY)') },
+            'Outside entry windows (London 11:30–14:00 DXB  |  NY 18:00–21:00 DXB)' },
     { label: '4H EMA9 > EMA21',      ok: h4ok !== null ? h4ok : true,
       note: h4ok === null ? 'No 4H data' :
             h4ok ? 'EMA9 ' + (tech.e9_4h||0).toFixed(places) + ' > EMA21 ' + (tech.e21_4h||0).toFixed(places)
@@ -577,7 +570,6 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
      {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
 
   var sessions = [
-    { name:'ASIAN',  dxbOpen:'04:30', dxbClose:'07:00', utcOpen: 0.5, utcClose: 3.0,  pairs:'AUD/JPY  CAD/JPY' },
     { name:'LONDON', dxbOpen:'11:30', dxbClose:'14:00', utcOpen: 7.5, utcClose:10.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' },
     { name:'NY',     dxbOpen:'18:00', dxbClose:'21:00', utcOpen:14.0, utcClose:17.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' }
   ];
@@ -841,14 +833,11 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
      {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
 
   var schedule = [
-    ['04:15 DXB', 'Pre-Asian',   'AUD/JPY  CAD/JPY',   '#2a2a00', 'Check macro score — is carry signal ready?'],
-    ['04:30 DXB', '▶ ASIAN OPEN','AUD/JPY  CAD/JPY',   '#0a2a14', 'Enter long if all 6 checks green'],
-    ['07:00 DXB', 'Asian closes','—',                   '#0a0e14', 'No more Asian entries'],
-    ['11:15 DXB', 'Pre-London',  'All 3 pairs',         '#2a2a00', 'Most important check of day — review all signals'],
-    ['11:30 DXB', '▶ LONDON OPEN','All 3 pairs',        '#0a2a14', 'Primary session — highest probability entries'],
-    ['14:00 DXB', 'London closes','—',                  '#0a0e14', 'No more London entries'],
-    ['18:00 DXB', '▶ NY OPEN',   'All 3 pairs',         '#0a2a14', 'Secondary session — evening Dubai check'],
-    ['21:00 DXB', 'NY closes',   '—',                   '#0a0e14', 'Close any open trades, review day P&L']
+    ['11:15 DXB', 'Pre-London',  'All 3 pairs', '#2a2a00', 'Most important check of day — review all signals before entry window'],
+    ['11:30 DXB', '▶ LONDON OPEN','All 3 pairs', '#0a2a14', 'Primary session — highest probability entries (UTC 07:30–10:00)'],
+    ['14:00 DXB', 'London closes','—',           '#0a0e14', 'No more London entries — wait for NY'],
+    ['18:00 DXB', '▶ NY OPEN',   'All 3 pairs', '#0a2a14', 'Secondary session — evening Dubai check (UTC 14:00–17:00)'],
+    ['21:00 DXB', 'NY closes',   '—',           '#0a0e14', 'Close any open trades, review day P&L']
   ];
   schedule.forEach(function(row) {
     cl(sheet, r, 1, row[0], {bg:row[3], fg: row[3]==='#0a2a14'?'#00e676':'#c0ccd6', sz:11, bold:true, h:30});
