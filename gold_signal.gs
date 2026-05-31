@@ -12,16 +12,23 @@
  *
  * V2: Step-by-step MT5 execution instructions.
  *
- * FILTER VALIDATION (A/B backtest — gold_v13_filter_test.py):
+ * FILTER VALIDATION — V3 backtests (gold_v3_backtest.py, 2yr data):
+ *   VIX ≥ 30        — ADD  (ΔSharpe +0.18; combined +0.44; crash regime Sharpe −0.60)
+ *   Skip June       — ADD  (ΔSharpe +0.27; June historical Sharpe −1.67)
+ *   Daily ATR 40-80% — INFO (ΔSharpe +1.38, p=0.083 borderline — shown as context)
+ *   ADX 20-35        — SKIP (ΔSharpe −2.41 — system is mean-reversion, fails in trend filter)
+ *   London ORB       — SKIP (ΔSharpe −0.49 — doesn't help)
+ *   Skip Monday      — SKIP (ΔSharpe −0.95 — hurts)
+ *   London session   — SKIP (ΔSharpe −0.40 — lower quality than NY window)
+ *
+ * V13 FILTER VALIDATION (gold_v13_filter_test.py):
  *   MACD histogram   — SKIP  (ΔSharpe −0.22, hurts)
  *   RSI < 55 / > 45  — SKIP  (ΔSharpe −1.25, hurts badly)
  *   Volume ≥ 120%    — SKIP  (0 trades — Twelve Data vol is synthetic tick-count)
  *   OBV > EMA10      — SKIP  (synthetic volume makes OBV unvalidatable)
- *   1H EMA9/21       — NOT TESTED — kept as display context only
- *   All 4 V13 filters are shown as INFORMATIONAL CONTEXT only, not entry gates.
  *
  * Macro signal: 5 components, score ≥0 = LONG bias, <0 = SHORT bias.
- * Entry requires 4 validated gates: session window, 4H EMA, 15m EMA, VWAP zone.
+ * Entry requires 6 validated gates: session window, 4H EMA, 15m EMA, VWAP zone, VIX<30, not-June.
  */
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -99,9 +106,12 @@ function getMacroScore() {
   var dxy  = yf('DX-Y.NYB',  '3mo');
   var tnx  = yf('%5ETNX',    '3mo');
   var gdx  = yf('GDX',       '3mo');
+  var vix  = yf('%5EVIX',    '5d');
 
-  var result = { score:0, dir:1, components:[], error:null, goldPriceD:null };
+  var result = { score:0, dir:1, components:[], error:null, goldPriceD:null, vix:null };
   if (!gold || gold.length < 55) { result.error = 'Macro data unavailable'; return result; }
+
+  result.vix = vix && vix.length > 0 ? Math.round(vix[vix.length-1] * 10) / 10 : null;
 
   var n    = gold.length;
   result.goldPriceD = gold[n-1];
@@ -192,10 +202,26 @@ function computeTechnicals(bars15m, bars1h) {
 
   var sv = sessionVwap(bars15m);
 
+  // Daily range ratio from 1h bars (proxy for ATR percentile)
+  var dailyRanges = {};
+  (bars1h || []).forEach(function(b) {
+    var day = b.dt.substring(0, 10);
+    if (!dailyRanges[day]) dailyRanges[day] = { h: b.h, l: b.l };
+    else { dailyRanges[day].h = Math.max(dailyRanges[day].h, b.h);
+           dailyRanges[day].l = Math.min(dailyRanges[day].l, b.l); }
+  });
+  var drDays    = Object.keys(dailyRanges).sort();
+  var drArr     = drDays.map(function(d){ return dailyRanges[d].h - dailyRanges[d].l; });
+  var drAvg     = drArr.length > 2 ? drArr.slice(0, -1).reduce(function(a,v){return a+v;},0) / Math.max(drArr.length-1,1) : null;
+  var drToday   = drArr.length > 0 ? drArr[drArr.length-1] : null;
+  var drRatio   = (drAvg && drToday) ? drToday / drAvg : null;
+  var drFlag    = drRatio ? (drRatio < 0.6 ? 'LOW' : drRatio > 2.0 ? 'HIGH' : 'OK') : null;
+
   return {
     price: last.c, high: last.h, low: last.l,
     ema9: e9[e9.length-1], ema21: e21[e21.length-1],
     atr: atrV,
+    dailyRange: drToday, dailyRangeAvg: drAvg, drRatio: drRatio, drFlag: drFlag,
     h1ema9: h1e9, h1ema21: h1e21,
     h4ema9: h4e9[li], h4ema21: h4e21[li], h4ema50: h4e50[li],
     vwap: sv.vwap, vwapStd: sv.std, vwapBars: sv.n,
@@ -236,6 +262,11 @@ function computeSetup(macro, tech, sessState) {
   var dir   = macro.dir;
   var price = tech.price;
   var atrV  = tech.atr;
+  var nowM  = new Date().getUTCMonth(); // 0-indexed: June = 5
+
+  // ── Day-level regime gates (tested in gold_v3_backtest.py) ───────────────
+  var vixOk  = macro.vix === null || macro.vix < 30;  // crash regime: Sharpe −0.60 at VIX≥30
+  var junOk  = nowM !== 5;                             // June: historical Sharpe −1.67
 
   // Short gate: blocked if price above 4H EMA50 (gold in bull trend — avoid shorting uptrend)
   if (dir === -1 && tech.h4ema50 && price > tech.h4ema50)
@@ -244,7 +275,7 @@ function computeSetup(macro, tech, sessState) {
 
   var dist = tech.vwapStd > 0 ? (price - tech.vwap) / tech.vwapStd : 99;
 
-  // ── Validated entry gates (4 required) ───────────────────────────────────
+  // ── Validated entry gates (6 required) ───────────────────────────────────
   var h4ok   = tech.h4ema9 && tech.h4ema21
     ? (dir===1 ? tech.h4ema9>tech.h4ema21 : tech.h4ema9<tech.h4ema21) : null;
   var emaOk  = dir===1 ? tech.ema9>tech.ema21 : tech.ema9<tech.ema21;
@@ -252,21 +283,28 @@ function computeSetup(macro, tech, sessState) {
     (dir===1 ? (dist>=-1.0 && dist<=0.3) : (dist>=-0.3 && dist<=1.0));
   var sessOk = sessState === 'ENTRY';
 
+  var vixStr = macro.vix !== null ? 'VIX='+macro.vix.toFixed(1) : 'VIX data unavailable';
   var checks = [
-    { label:'Session entry window',       ok:sessOk,
+    { label:'Session entry window',         ok:sessOk,
       note: sessOk?'✓ 18:00–20:30 Dubai active':'Outside entry window (18:00–20:30 DXB / 14:00–16:30 UTC)' },
-    { label:'4H EMA9 > EMA21',            ok:h4ok!==null?h4ok:true,
+    { label:'4H EMA9 > EMA21',              ok:h4ok!==null?h4ok:true,
       note: h4ok===null?'No 4H data':h4ok?'4H EMA9 '+fix(tech.h4ema9)+' aligned':'4H EMA9/21 misaligned — wrong trend' },
-    { label:'15m EMA9 > EMA21',           ok:emaOk,
+    { label:'15m EMA9 > EMA21',             ok:emaOk,
       note: emaOk?'EMA9 '+fix(tech.ema9)+' aligned':'EMA9 '+fix(tech.ema9)+' / EMA21 '+fix(tech.ema21)+' misaligned' },
     { label:'VWAP pullback zone (≥4 bars)', ok:vwOk,
       note: vwOk
         ? 'dist='+Math.round(dist*100)/100+'σ ✓  VWAP=$'+fix(tech.vwap)
         : tech.vwapBars<4 ? 'Only '+tech.vwapBars+' session bars (need ≥4)'
-          : 'dist='+Math.round(dist*100)/100+'σ — need '+(dir===1?'-1.0 to +0.3σ':'-0.3 to +1.0σ')+'  VWAP=$'+fix(tech.vwap) }
+          : 'dist='+Math.round(dist*100)/100+'σ — need '+(dir===1?'-1.0 to +0.3σ':'-0.3 to +1.0σ')+'  VWAP=$'+fix(tech.vwap) },
+    { label:'VIX regime (< 30)',            ok:vixOk,
+      note: vixOk
+        ? vixStr+' — normal regime (optimal zone: 20–25, backtest Sharpe +1.81)'
+        : vixStr+' ≥ 30 — CRASH regime: gold Sharpe −0.60 in backtest. Skip today.' },
+    { label:'Month filter (not June)',       ok:junOk,
+      note: junOk ? 'Month OK — not June' : 'June — worst month for gold historically (Sharpe −1.67). Skip.' }
   ];
 
-  var allOk = sessOk && (h4ok!==false) && emaOk && vwOk;
+  var allOk = sessOk && (h4ok!==false) && emaOk && vwOk && vixOk && junOk;
 
   if (allOk) {
     var totalSz = (ACCOUNT * RISK_PCT) / (SL_MULT * atrV);
@@ -321,7 +359,10 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
               LATE:'🕐 Entry closed',CLOSED:'🔒 Session closed'};
   var sFg  = {BEFORE:'#607d8b',CHOP:'#ff9800',ENTRY:'#00e676',LATE:'#ff9800',CLOSED:'#607d8b'};
 
-  ['GOLD PRICE','MACRO SCORE','SESSION','4H TREND','ATR $USD'].forEach(function(h,i){
+  var vixNow   = macro.vix;
+  var vixFg    = !vixNow ? '#808080' : vixNow >= 30 ? '#ff1744' : vixNow >= 20 ? '#ff9800' : '#00e676';
+  var vixLabel = !vixNow ? '—' : vixNow.toFixed(1) + (vixNow >= 30 ? ' ⚠' : '');
+  ['GOLD PRICE','MACRO SCORE','SESSION','VIX','4H TREND'].forEach(function(h,i){
     cell(sheet, r, i+1, h, {bg:'#1c1c3a', fg:'#8888aa', sz:9, bold:true, h:22});
   });
   r++;
@@ -330,8 +371,18 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   cell(sheet, r,1, price?'$'+fix(price):'—',     {bg:'#0d0d20', fg:'#FFD700', sz:16, bold:true, h:44});
   cell(sheet, r,2, score.toFixed(1),              {bg:'#0d0d20', fg:scoreFg,  sz:16, bold:true});
   cell(sheet, r,3, sMap[sessState]||sessState,    {bg:'#0d0d20', fg:sFg[sessState]||'#808080', sz:10, bold:true});
-  cell(sheet, r,4, h4Trend,                       {bg:'#0d0d20', fg:tech?(tech.h4ema9>tech.h4ema21?'#00e676':'#ff5252'):'#808080', sz:11, bold:true});
-  cell(sheet, r,5, tech?'$'+fix(tech.atr):'—',   {bg:'#0d0d20', fg:'#b0bec5', sz:11}); r++; r++;
+  cell(sheet, r,4, vixLabel,                      {bg:'#0d0d20', fg:vixFg, sz:16, bold:true});
+  cell(sheet, r,5, h4Trend,                       {bg:'#0d0d20', fg:tech?(tech.h4ema9>tech.h4ema21?'#00e676':'#ff5252'):'#808080', sz:11, bold:true});
+  r++;
+  // ATR subrow
+  cell(sheet, r,1, tech?'ATR $'+fix(tech.atr):'—',{bg:'#080818', fg:'#445566', sz:9, h:20});
+  sheet.getRange(r,2,1,4).merge().setValue(
+    tech && tech.dailyRange ? 'Daily range: $'+fix(tech.dailyRange)+(tech.drRatio?'  ('+Math.round(tech.drRatio*100)+'% of '+fix(tech.dailyRangeAvg)+' avg'+
+      (tech.drFlag==='LOW'?' — LOW VOL ⚠':tech.drFlag==='HIGH'?' — HIGH VOL ⚠':' — normal')+')':''):'')
+    .setBackground('#080818').setFontColor(
+      tech&&tech.drFlag==='LOW'?'#ff9800':tech&&tech.drFlag==='HIGH'?'#ff5252':'#445566')
+    .setFontSize(9).setVerticalAlignment('middle').setHorizontalAlignment('left').setWrap(true);
+  r++; r++;
 
   // ── WHAT TO DO NOW ────────────────────────────────────────────────────────
   var inEntry = sessState === 'ENTRY';
@@ -339,7 +390,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   var actionFg = setup.action==='ACTIVE'?'#00ff88':inEntry?'#aaddaa':'#9e9e9e';
   mrow(sheet, r, 5,
        setup.action==='ACTIVE'
-         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 4 entry gates passed'
+         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 6 entry gates passed'
          : inEntry
            ? '⏱  IN SESSION — watching for setup  (Bias: '+(setup.dir||'—')+')'
            : '⏳  NEXT SESSION: 18:00 Dubai (14:00 UTC)',
@@ -411,6 +462,39 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   });
   r++;
 
+  // ── V3 Regime Context ─────────────────────────────────────────────────────
+  if (tech) {
+    var vixNow2  = macro.vix;
+    var drRatio2 = tech.drRatio;
+    var drFlag2  = tech.drFlag;
+    mrow(sheet, r, 5, 'V3 REGIME CONTEXT  (daily filters — VIX & ATR)',
+         {bg:'#1a2a1a', fg:'#50a050', sz:9, bold:true, h:22}); r++;
+    // VIX row
+    var vixOk2 = !vixNow2 || vixNow2 < 30;
+    var v3Rows = [
+      ['VIX level',
+       vixNow2 ? vixNow2.toFixed(1) : '—',
+       vixOk2 ? (vixNow2 ? (vixNow2 < 20 ? '✓ low vol (<20)' : vixNow2 < 25 ? '✓ sweet spot (20-25)' : '✓ elevated, watch') : '✓ n/a') : '✗ SKIP — crash regime',
+       vixOk2],
+      ['Daily range vs avg',
+       drRatio2 ? Math.round(drRatio2*100)+'%' : '—',
+       !drRatio2 ? '—' : drFlag2==='OK' ? '✓ normal vol range (40-80th pctile)' : drFlag2==='LOW' ? '⚠ LOW vol — thin day, consider skip' : '⚠ HIGH vol — chaotic day, consider skip',
+       !drRatio2 ? null : drFlag2==='OK']
+    ];
+    v3Rows.forEach(function(row) {
+      var ok = row[3];
+      var bg3 = ok===null?'#111111':ok?'#0a1a0a':'#1a0a0a';
+      var fg3 = ok===null?'#607d8b':ok?'#00c853':'#ff5252';
+      cell(sheet, r,1, row[0], {bg:bg3, fg:'#7a8899', sz:9, bold:false, h:28});
+      cell(sheet, r,2, row[1], {bg:bg3, fg:'#e0e0e0', sz:12, bold:true});
+      sheet.getRange(r,3,1,2).merge().setValue(row[2]||'—')
+        .setBackground(bg3).setFontColor(fg3).setFontSize(10).setFontWeight('bold')
+        .setVerticalAlignment('middle').setHorizontalAlignment('center').setWrap(true);
+      cell(sheet, r,5, ok===null?'INFO':ok?'PASS':'SKIP', {bg:bg3, fg:fg3, sz:10, bold:true}); r++;
+    });
+    r++;
+  }
+
   // ── V13 Technical Filter Status ───────────────────────────────────────────
   if (tech) {
     mrow(sheet, r, 5, 'V13 CONTEXT  (A/B tested — informational only, NOT entry gates)',
@@ -469,7 +553,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   var schedule = [
     ['17:15 DXB', 'Pre-session',  '#1a1a0a', 'Review macro score · set price alerts near VWAP zone · identify long or short bias'],
     ['17:30 DXB', 'Session open', '#0a0a1a', 'VWAP starts building from 13:30 UTC — do not trade yet (chop zone)'],
-    ['18:00 DXB', '▶ ENTRY OPEN','#0a2a14', 'Entry window opens — all 9 filters must pass · watch for VWAP pullback'],
+    ['18:00 DXB', '▶ ENTRY OPEN','#0a2a14', 'Entry window opens — all 6 gates must pass · watch for VWAP pullback'],
     ['19:00 DXB', 'Mid-session',  '#0a1628', 'Check open positions · if TP1 hit → close 60%, move SL to breakeven'],
     ['20:30 DXB', 'Entry closes', '#1a0a0a', 'No new entries after this — manage existing positions only'],
     ['21:00 DXB', 'Session ends', '#0a0a0a', 'Close ALL open trades — no overnight holds — record P&L']
@@ -486,7 +570,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   // ── Footer ────────────────────────────────────────────────────────────────
   r++;
   mrow(sheet, r, 5,
-       'VALIDATED GATES: 4H EMA · 15m EMA · VWAP ±1σ zone · session window  +  4H EMA50 short gate  |  MACD/RSI/Vol/OBV shown as context only (A/B tested — did not improve gold)  |  Session 17:30–21:00 DXB',
+       'VALIDATED GATES (6): session window · 4H EMA · 15m EMA · VWAP ±1σ · VIX<30 · not-June  |  +4H EMA50 short gate  |  ATR daily range: INFO only (p=0.083)  |  MACD/RSI/Vol/OBV: context only (A/B tested — no improvement)',
        {bg:'#080810', fg:'#282840', sz:8, h:22}); r++;
   mrow(sheet, r, 5,
        'Risk: '+RISK_PCT*100+'% ($'+Math.round(ACCOUNT*RISK_PCT)+') · SL=0.75×ATR · TP1=1.5×ATR (60%) · TP2=2.5×ATR (40%) · Time stop 90min · Max 2 trades/session',
