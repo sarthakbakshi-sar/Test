@@ -157,10 +157,11 @@ macro_vix  = {d.date(): float(r['vix'])         for d, r in dm.iterrows()}
 print(f"  Macro data: {len(dm)} trading days")
 
 # ── 4H CONTEXT ────────────────────────────────────────────────────────────────
-gold_1h = yf.download("GC=F", period="1300d", interval="1h", progress=False)
+gold_1h = yf.download("GC=F", period="720d", interval="1h", progress=False)
 gold_1h.columns = [c[0].lower() for c in gold_1h.columns]
 gold_1h.index   = pd.to_datetime(gold_1h.index).tz_localize(None)
 gold_1h.dropna(inplace=True)
+print(f"  4H context: {len(gold_1h)} hourly bars, {gold_1h.index[0].date() if len(gold_1h) > 0 else 'n/a'} → {gold_1h.index[-1].date() if len(gold_1h) > 0 else 'n/a'}")
 g4 = gold_1h.resample('4h', label='left', closed='left').agg(
     {'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
 g4['ema9']  = g4['close'].ewm(span=9,  adjust=False).mean()
@@ -606,6 +607,9 @@ print(f"\n{'='*110}")
 print(f"  BEST: {best_label.strip()}")
 print(f"{'='*110}")
 eq_best, trs_best = run(**best_kwargs)
+if not trs_best:
+    print("  No trades generated — check data/score alignment.")
+    import sys; sys.exit(0)
 t = pd.DataFrame(trs_best)
 t['date']  = pd.to_datetime(t['date'])
 t['win']   = t['pnl'] > 0
