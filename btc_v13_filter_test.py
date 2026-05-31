@@ -100,6 +100,51 @@ def _to_df(raw):
         df[c] = pd.to_numeric(df[c])
     return df[['open','high','low','close','volume']].dropna()
 
+def load_twelve_data_btc(interval="15min"):
+    """Twelve Data fallback — same API key as gold."""
+    if not TD_KEY:
+        return None
+    print(f"\nLoading BTC from Twelve Data ({interval})...")
+    all_frames = []
+    end_date   = None
+    for page in range(8):
+        try:
+            url = (f"https://api.twelvedata.com/time_series?"
+                   f"symbol=BTC/USD&interval={interval}"
+                   f"&outputsize=5000&order=DESC&apikey={TD_KEY}")
+            if end_date:
+                url += f"&end_date={end_date}"
+            r   = requests.get(url, timeout=30)
+            raw = r.json()
+            if 'values' not in raw:
+                print(f"  Twelve Data: {raw.get('message','error')}")
+                break
+            df = pd.DataFrame(raw['values'])
+            df.index = pd.to_datetime(df['datetime'])
+            cols = [c for c in ['open','high','low','close','volume'] if c in df.columns]
+            df   = df[cols].copy()
+            for c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+            df.dropna(inplace=True)
+            if 'volume' not in df.columns:
+                df['volume'] = 100000.0
+            if len(df) == 0:
+                break
+            all_frames.append(df)
+            oldest   = df.index.min()
+            end_date = (oldest - pd.Timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"  Page {page+1}: {len(df)} bars | oldest: {oldest.date()}")
+            time_module.sleep(8)
+        except Exception as e:
+            print(f"  Twelve Data error: {e}")
+            break
+    if not all_frames:
+        return None
+    result = pd.concat(all_frames)
+    result = result[~result.index.duplicated(keep='first')].sort_index()
+    print(f"  Total: {len(result)} bars | {result.index[0].date()} → {result.index[-1].date()}")
+    return result
+
 def load_yfinance_btc():
     print("\nLoading BTC from yfinance (60d fallback)...")
     try:
@@ -115,6 +160,8 @@ def load_yfinance_btc():
         return None
 
 df = load_binance("BTCUSDT", "15m", 365)
+if df is None or len(df) < 500:
+    df = load_twelve_data_btc("15min")
 if df is None or len(df) < 500:
     df = load_yfinance_btc()
 if df is None:

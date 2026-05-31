@@ -13,15 +13,17 @@
  * Backtest (37 months Apr 2023–May 2026):
  *   p=0.006 ✓  ·  Sharpe 2.83  ·  WR 47.9%  ·  MDD −17.5%  ·  +269%  ·  242 trades
  *
- * V2 CHANGES vs V1:
- *   + MACD(12,26,9) histogram direction filter (momentum confirmation)
- *   + RSI(14) 15m < 55 for longs / > 45 for shorts (pullback zone)
- *   + Volume ≥ 120% of 20-bar avg (Binance/BTC has real exchange volume)
- *   + OBV > OBV EMA10 for longs / below for shorts (order flow aligned)
- *   + Step-by-step Bybit execution instructions in trade block
- *   + VWAP entry zone price range shown when waiting
- *   All 4 V13 filters now match the FTMO forex V15 system.
- *   Total filters: 11 — macro strict gate (±6) + 3 EMA + VWAP + 4 V13 + ETF + Vol gate
+ * V2: Step-by-step Bybit execution instructions + VWAP entry zone display.
+ *
+ * FILTER VALIDATION (A/B backtest — btc_v13_filter_test.py):
+ *   Binance blocked (451) → tested on Twelve Data (10 months). Baseline system
+ *   was net-negative in that period — no filter reached a positive Sharpe.
+ *   MACD histogram  — SKIP  (ΔSharpe −9.01, hurts badly)
+ *   RSI < 55 / > 45 — inconclusive (ΔSharpe +2.66 but system overall negative)
+ *   Volume ≥ 120%   — SKIP  (0 trades — Twelve Data vol is constant, synthetic)
+ *   OBV > EMA10     — SKIP  (ΔSharpe −1.02)
+ *   All 4 V13 filters shown as INFORMATIONAL CONTEXT only — not entry gates.
+ *   Validated gates (7): ETF gate · vol% gate · 4H/1H/15m EMA · VWAP · session
  */
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -323,41 +325,27 @@ function computeSetup(macro, tech, sessState, etf) {
     (dir===1?(dist>=-1.0&&dist<=0.3):(dist>=-0.3&&dist<=1.0));
   var sessOk = sessState==='ENTRY';
 
-  // V13 filters
-  var macdOk = tech.macdHist!==null?(dir===1?tech.macdHist>0:tech.macdHist<0):true;
-  var rsiOk  = tech.rsi15m!==null?(dir===1?tech.rsi15m<55:tech.rsi15m>45):true;
-  var volOk  = tech.volRatio!==null?tech.volRatio>=1.20:true;
-  var obvOk  = tech.obvAbove!==null?(dir===1?tech.obvAbove===true:tech.obvAbove===false):true;
-
   var atrPctStr = Math.round(atrPct*10000)/100+'%';
 
+  // ── Validated entry gates (7 required) ───────────────────────────────────
   var checks = [
-    { label:'ETF flow gate',         ok:etfOk,
+    { label:'ETF flow gate',               ok:etfOk,
       note: etfNote(etf)+(etfOk?' ✓':' ✗ — '+etf.sum5d+'M net '+(dir===1?'outflow blocks LONG':'inflow blocks SHORT')) },
-    { label:'Volatility in range',   ok:volGtOk,
+    { label:'Volatility in range',         ok:volGtOk,
       note:'ATR '+atrPctStr+' (need 0.10–1.50%)'+(volGtOk?' ✓':' ✗') },
-    { label:'4H EMA9 > EMA21',       ok:h4ok,
+    { label:'4H EMA9 > EMA21',             ok:h4ok,
       note:'4H EMA9 '+(h4ok?'>':'<')+' EMA21'+(h4ok?' ✓':' ✗ misaligned') },
-    { label:'1H EMA9 > EMA21',       ok:h1ok,
+    { label:'1H EMA9 > EMA21',             ok:h1ok,
       note:'1H EMA9 '+(h1ok?'>':'<')+' EMA21'+(h1ok?' ✓':' ✗ misaligned') },
-    { label:'15m EMA9 > EMA21',      ok:emaOk,
-      note:'15m EMA9='+'$'+Math.round(tech.ema9)+' '+(emaOk?'>':'<')+' EMA21=$'+Math.round(tech.ema21)+(emaOk?' ✓':' ✗') },
+    { label:'15m EMA9 > EMA21',            ok:emaOk,
+      note:'15m EMA9=$'+Math.round(tech.ema9)+' '+(emaOk?'>':'<')+' EMA21=$'+Math.round(tech.ema21)+(emaOk?' ✓':' ✗') },
     { label:'VWAP pullback zone (≥4 bars)', ok:vwOk,
       note:'dist='+Math.round(dist*100)/100+'σ'+(vwOk?' ✓':' ✗ — need '+(dir===1?'-1.0 to +0.3σ':'-0.3 to +1.0σ'))+'  VWAP=$'+Math.round(tech.vwap) },
-    { label:'MACD(12,26,9) hist '+(dir===1?'>0':'<0'), ok:macdOk,
-      note:'hist='+(tech.macdHist!==null?Math.round(tech.macdHist):'—')+(macdOk?' ✓ aligned':' ✗ momentum against') },
-    { label:'RSI(14) 15m '+(dir===1?'< 55 (pullback)':'> 45 (pullback)'), ok:rsiOk,
-      note:'RSI='+(tech.rsi15m!==null?Math.round(tech.rsi15m):'—')+(rsiOk?' ✓':' ✗ outside pullback zone') },
-    { label:'Volume ≥ 120% avg',     ok:volOk,
-      note:'Vol '+(tech.volRatio!==null?Math.round(tech.volRatio*100)+'%':'—')+' of avg'+(volOk?' ✓':' ✗ low volume — wait for surge') },
-    { label:'OBV > OBV EMA10',       ok:obvOk,
-      note:'OBV '+(tech.obvAbove!==null?tech.obvAbove?'above':'below':'—')+' EMA10'+(obvOk?' ✓':' ✗ flow not aligned') },
-    { label:'Entry window open',     ok:sessOk,
+    { label:'Entry window open',           ok:sessOk,
       note:sessOk?'18:00–20:30 Dubai ✓':'Session: '+sessState+' — need ENTRY window (18:00–20:30 DXB)' }
   ];
 
-  var allOk = etfOk&&volGtOk&&h4ok&&h1ok&&emaOk&&vwOk&&sessOk
-              &&macdOk&&rsiOk&&volOk&&obvOk;
+  var allOk = etfOk&&volGtOk&&h4ok&&h1ok&&emaOk&&vwOk&&sessOk;
 
   if (allOk) {
     var totalSz = (ACCOUNT*RISK_PCT)/(SL_MULT*atrV);
@@ -397,7 +385,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, etf, setup) {
   // ── Header ────────────────────────────────────────────────────────────────
   mrow(sheet, r, 5, '₿  BTC SIGNAL  V2  —  BTC/USD  VWAP PULLBACK',
        {bg:'#1a1a0a', fg:'#F7931A', sz:15, bold:true, h:44}); r++;
-  mrow(sheet, r, 5, utcStr+'  ·  '+dubaiStr+'  ·  Auto-refresh 5 min  ·  11 filters',
+  mrow(sheet, r, 5, utcStr+'  ·  '+dubaiStr+'  ·  Auto-refresh 5 min  ·  7 validated gates',
        {bg:'#12120a', fg:'#404030', sz:10, h:22}); r++; r++;
 
   // ── Status row ────────────────────────────────────────────────────────────
@@ -429,11 +417,11 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, etf, setup) {
   var actionFg = setup.action==='ACTIVE'?'#00ff88':inEntry?'#aaddaa':'#9e9e9e';
   mrow(sheet, r, 5,
        setup.action==='ACTIVE'
-         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 11 filters passed'
+         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 7 entry gates passed'
          : setup.action==='SKIP'
            ? '⊘  NO TRADE — Macro score '+score.toFixed(1)+' (need ≥+6 or ≤−6)'
            : inEntry
-             ? '⏱  IN SESSION — watching for '+(setup.dir||'—')+' setup'
+             ? '⏱  IN SESSION — watching for '+(setup.dir||'—')+' setup  (bias: score '+score.toFixed(1)+')'
              : '⏳  NEXT SESSION: 18:00 Dubai (14:00 UTC)',
        {bg:actionBg, fg:actionFg, sz:13, bold:true, h:36}); r++;
 
@@ -510,8 +498,8 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, etf, setup) {
 
   // ── V13 Technical Filter Status ───────────────────────────────────────────
   if (tech) {
-    mrow(sheet, r, 5, 'V13 TECHNICAL FILTERS (live 15m values)',
-         {bg:'#1a1a08', fg:'#60600a', sz:9, bold:true, h:22}); r++;
+    mrow(sheet, r, 5, 'V13 CONTEXT  (A/B tested — informational only, NOT entry gates)',
+         {bg:'#1a1a08', fg:'#505008', sz:9, bold:true, h:22}); r++;
     var dir = macro.dir;
     var filterRows = [
       ['MACD(12,26,9) histogram', tech.macdHist!==null?Math.round(tech.macdHist):'—',
@@ -588,7 +576,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, etf, setup) {
   var schedule = [
     ['17:15 DXB','Pre-session','#1a1a0a','Review macro score + ETF flows · set price alerts near VWAP zone'],
     ['17:30 DXB','Session open','#0a0a00','VWAP starts building from 13:30 UTC — no trades yet (chop)'],
-    ['18:00 DXB','▶ ENTRY OPEN','#0a2a00','Entry window opens — all 11 filters must pass · VWAP pullback'],
+    ['18:00 DXB','▶ ENTRY OPEN','#0a2a00','Entry window opens — all 7 gates must pass · VWAP pullback setup'],
     ['19:00 DXB','Mid-session','#0a1200','Check positions · if TP1 hit → move SL to breakeven'],
     ['20:30 DXB','Entry closes','#1a0800','No new entries — manage existing only'],
     ['21:00 DXB','Session ends','#0a0800','Close ALL trades — no overnight holds']
@@ -605,7 +593,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, etf, setup) {
   // ── Footer ────────────────────────────────────────────────────────────────
   r++;
   mrow(sheet, r, 5,
-       'V2: 11 filters — ETF gate · vol% gate · 4H/1H/15m EMA · VWAP ±1σ · MACD hist · RSI15m<55/>45 · Vol≥120% · OBV aligned',
+       'VALIDATED GATES (7): ETF flow · vol% range · 4H/1H/15m EMA · VWAP ±1σ · session window  |  MACD/RSI/Vol/OBV shown as context (A/B tested — inconclusive with Twelve Data)',
        {bg:'#080800', fg:'#282810', sz:8, h:22}); r++;
   mrow(sheet, r, 5,
        'Backtest Apr 2023–May 2026 · p=0.006 ✓ · Sharpe 2.83 · WR 47.9% · MDD −17.5% · +269% · 242 trades',

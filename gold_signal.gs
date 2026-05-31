@@ -10,17 +10,18 @@
  * Session: 17:30–21:00 Dubai  |  Entry window: 18:00–20:30 Dubai
  *          (13:30–17:00 UTC)                 (14:00–16:30 UTC)
  *
- * V2 CHANGES vs V1:
- *   + MACD(12,26,9) histogram direction filter (momentum aligned)
- *   + RSI(14) 15m < 55 for longs / > 45 for shorts (pullback zone)
- *   + Volume ≥ 120% of 20-bar avg (surge confirmation)
- *   + OBV > OBV EMA10 for longs / below for shorts (flow aligned)
- *   + 1H EMA9/EMA21 alignment filter (intermediate structure)
- *   + Step-by-step MT5 execution instructions in trade block
- *   All 4 V13 filters now match the FTMO forex V15 system.
+ * V2: Step-by-step MT5 execution instructions.
+ *
+ * FILTER VALIDATION (A/B backtest — gold_v13_filter_test.py):
+ *   MACD histogram   — SKIP  (ΔSharpe −0.22, hurts)
+ *   RSI < 55 / > 45  — SKIP  (ΔSharpe −1.25, hurts badly)
+ *   Volume ≥ 120%    — SKIP  (0 trades — Twelve Data vol is synthetic tick-count)
+ *   OBV > EMA10      — SKIP  (synthetic volume makes OBV unvalidatable)
+ *   1H EMA9/21       — NOT TESTED — kept as display context only
+ *   All 4 V13 filters are shown as INFORMATIONAL CONTEXT only, not entry gates.
  *
  * Macro signal: 5 components, score ≥0 = LONG bias, <0 = SHORT bias.
- * Entry requires ALL 9 checks to pass.
+ * Entry requires 4 validated gates: session window, 4H EMA, 15m EMA, VWAP zone.
  */
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -243,51 +244,29 @@ function computeSetup(macro, tech, sessState) {
 
   var dist = tech.vwapStd > 0 ? (price - tech.vwap) / tech.vwapStd : 99;
 
-  // ── All 9 filters ──────────────────────────────────────────────────────────
-  var h4ok  = tech.h4ema9 && tech.h4ema21
+  // ── Validated entry gates (4 required) ───────────────────────────────────
+  var h4ok   = tech.h4ema9 && tech.h4ema21
     ? (dir===1 ? tech.h4ema9>tech.h4ema21 : tech.h4ema9<tech.h4ema21) : null;
-  var h1ok  = tech.h1ema9 && tech.h1ema21
-    ? (dir===1 ? tech.h1ema9>tech.h1ema21 : tech.h1ema9<tech.h1ema21) : null;
-  var emaOk = dir===1 ? tech.ema9>tech.ema21 : tech.ema9<tech.ema21;
-  var vwOk  = tech.vwapBars >= 4 &&
+  var emaOk  = dir===1 ? tech.ema9>tech.ema21 : tech.ema9<tech.ema21;
+  var vwOk   = tech.vwapBars >= 4 &&
     (dir===1 ? (dist>=-1.0 && dist<=0.3) : (dist>=-0.3 && dist<=1.0));
   var sessOk = sessState === 'ENTRY';
 
-  // V13 filters
-  var macdOk = tech.macdHist !== null
-    ? (dir===1 ? tech.macdHist>0 : tech.macdHist<0) : true;
-  var rsiOk  = tech.rsi15m !== null
-    ? (dir===1 ? tech.rsi15m<55 : tech.rsi15m>45) : true;
-  var volOk  = tech.volRatio !== null ? tech.volRatio >= 1.20 : true;
-  var obvOk  = tech.obvAbove !== null
-    ? (dir===1 ? tech.obvAbove===true : tech.obvAbove===false) : true;
-
   var checks = [
-    { label:'Session entry window',  ok:sessOk,
+    { label:'Session entry window',       ok:sessOk,
       note: sessOk?'✓ 18:00–20:30 Dubai active':'Outside entry window (18:00–20:30 DXB / 14:00–16:30 UTC)' },
-    { label:'4H EMA9 > EMA21',       ok:h4ok!==null?h4ok:true,
+    { label:'4H EMA9 > EMA21',            ok:h4ok!==null?h4ok:true,
       note: h4ok===null?'No 4H data':h4ok?'4H EMA9 '+fix(tech.h4ema9)+' aligned':'4H EMA9/21 misaligned — wrong trend' },
-    { label:'1H EMA9 > EMA21',       ok:h1ok!==null?h1ok:true,
-      note: h1ok===null?'No 1H data':h1ok?'1H EMA9 '+fix(tech.h1ema9)+' aligned':'1H EMA9/21 misaligned' },
-    { label:'15m EMA9 > EMA21',      ok:emaOk,
+    { label:'15m EMA9 > EMA21',           ok:emaOk,
       note: emaOk?'EMA9 '+fix(tech.ema9)+' aligned':'EMA9 '+fix(tech.ema9)+' / EMA21 '+fix(tech.ema21)+' misaligned' },
     { label:'VWAP pullback zone (≥4 bars)', ok:vwOk,
       note: vwOk
         ? 'dist='+Math.round(dist*100)/100+'σ ✓  VWAP=$'+fix(tech.vwap)
         : tech.vwapBars<4 ? 'Only '+tech.vwapBars+' session bars (need ≥4)'
-          : 'dist='+Math.round(dist*100)/100+'σ — need '+(dir===1?'-1.0 to +0.3σ':'-0.3 to +1.0σ')+'  VWAP=$'+fix(tech.vwap) },
-    { label:'MACD(12,26,9) hist '+(dir===1?'>0':'<0'), ok:macdOk,
-      note: tech.macdHist!==null?'hist='+(Math.round(tech.macdHist*100)/100)+(macdOk?' ✓ momentum aligned':' ✗ momentum against'):'insufficient data' },
-    { label:'RSI(14) 15m '+(dir===1?'< 55 (pullback)':'> 45 (pullback)'), ok:rsiOk,
-      note: tech.rsi15m!==null?'RSI='+Math.round(tech.rsi15m)+(rsiOk?' ✓ pullback zone':' ✗ outside zone'):'insufficient data' },
-    { label:'Volume ≥ 120% of avg',  ok:volOk,
-      note: tech.volRatio!==null?(Math.round(tech.volRatio*100))+'% of avg'+(volOk?' ✓':' ✗ low volume — wait for surge'):'no vol data (spot FX tick vol)' },
-    { label:'OBV > OBV EMA10',       ok:obvOk,
-      note: tech.obvAbove!==null?(tech.obvAbove?'OBV above':'OBV below')+' EMA10'+(obvOk?' ✓':' ✗ flow not aligned'):'insufficient data' }
+          : 'dist='+Math.round(dist*100)/100+'σ — need '+(dir===1?'-1.0 to +0.3σ':'-0.3 to +1.0σ')+'  VWAP=$'+fix(tech.vwap) }
   ];
 
-  var allOk = sessOk && (h4ok!==false) && (h1ok!==false) && emaOk && vwOk
-              && macdOk && rsiOk && volOk && obvOk;
+  var allOk = sessOk && (h4ok!==false) && emaOk && vwOk;
 
   if (allOk) {
     var totalSz = (ACCOUNT * RISK_PCT) / (SL_MULT * atrV);
@@ -360,7 +339,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   var actionFg = setup.action==='ACTIVE'?'#00ff88':inEntry?'#aaddaa':'#9e9e9e';
   mrow(sheet, r, 5,
        setup.action==='ACTIVE'
-         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 9 filters passed'
+         ? '⚡  ENTER '+(setup.dir||'')+'  NOW  —  All 4 entry gates passed'
          : inEntry
            ? '⏱  IN SESSION — watching for setup  (Bias: '+(setup.dir||'—')+')'
            : '⏳  NEXT SESSION: 18:00 Dubai (14:00 UTC)',
@@ -434,8 +413,8 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
 
   // ── V13 Technical Filter Status ───────────────────────────────────────────
   if (tech) {
-    mrow(sheet, r, 5, 'V13 TECHNICAL FILTERS (live 15m values)',
-         {bg:'#1a1a2e', fg:'#6060a0', sz:9, bold:true, h:22}); r++;
+    mrow(sheet, r, 5, 'V13 CONTEXT  (A/B tested — informational only, NOT entry gates)',
+         {bg:'#1a1a2e', fg:'#505080', sz:9, bold:true, h:22}); r++;
     var dir = macro.dir;
     var filterRows = [
       ['MACD(12,26,9) histogram', tech.macdHist!==null?(Math.round(tech.macdHist*100)/100).toFixed(4):'—',
@@ -507,7 +486,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   // ── Footer ────────────────────────────────────────────────────────────────
   r++;
   mrow(sheet, r, 5,
-       'V2: 9 filters — 4H/1H/15m EMA · VWAP ±1σ · MACD hist · RSI15m<55/>45 · Vol≥120% · OBV aligned  |  p=0.036 ✓  |  Session 17:30–21:00 DXB',
+       'VALIDATED GATES: 4H EMA · 15m EMA · VWAP ±1σ zone · session window  +  4H EMA50 short gate  |  MACD/RSI/Vol/OBV shown as context only (A/B tested — did not improve gold)  |  Session 17:30–21:00 DXB',
        {bg:'#080810', fg:'#282840', sz:8, h:22}); r++;
   mrow(sheet, r, 5,
        'Risk: '+RISK_PCT*100+'% ($'+Math.round(ACCOUNT*RISK_PCT)+') · SL=0.75×ATR · TP1=1.5×ATR (60%) · TP2=2.5×ATR (40%) · Time stop 90min · Max 2 trades/session',
