@@ -5,12 +5,24 @@
  * Account: $120,000  |  Target: $132,000 (+10%)  |  Floor: $108,000 (-10%)
  * Daily limit: -$6,000
  *
- * V10 Portfolio Stats (Sep 2024 – May 2026):
- *   ROI +142.8%  |  Sharpe 1.89  |  p=0.0065 ✓  |  Floor ✓  |  2.95 trades/week
- *   TREND: CAD/CHF 2%  WR 49%  avgR +0.357  (long + short)  ← primary signal
- *          AUD/JPY 1.5% WR 39%  avgR +0.146  (LONG ONLY — carry trade)
- *          CAD/JPY 1%   WR 40%  avgR +0.144  (LONG ONLY — carry trade)
- *   ORB:   GBP/JPY 1%   WR 58%  avgR +0.150  (LONG ONLY — London open breakout)
+ * V13 Portfolio Stats (Sep 2024 – May 2026):
+ *   ROI +109.8%  |  Sharpe 2.94  |  Max DD 9.6%  |  p=0.0001 ✓  |  Floor ✓  |  1.61 trades/week
+ *   TREND: CAD/CHF 2%  WR 63%  avgR +0.900  (long + short)  — 4 technical filters
+ *          AUD/JPY 1.5% WR 56%  avgR +0.633  (LONG ONLY — carry trade)
+ *          CAD/JPY 1%   WR 55%  avgR +0.697  (LONG ONLY — carry trade)
+ *   ORB:   GBP/JPY 1%   WR 57%  avgR +0.137  (LONG ONLY — London open breakout)
+ *
+ * V13 TECHNICAL FILTERS (all 4 must pass for entry):
+ *   1. MACD(12,26,9) histogram > 0  (strict momentum confirmation)
+ *   2. RSI(14) 15m < 55 for longs, > 45 for shorts  (pullback zone)
+ *   3. Volume ≥ 120% of 20-bar average  (volume surge)
+ *   4. OBV > OBV EMA10  (cumulative flow aligned)
+ *
+ * V13 REGIME ENGINE (daily, from macro EMAs):
+ *   BULL:      Oil>EMA50 + Copper>EMA50 + VIX<EMA20 + SPX>EMA50 → 1.0× size, all pairs
+ *   OIL_WEAK:  Oil<EMA50 → skip CAD/JPY, CAD/CHF short threshold −4, 0.75× size
+ *   VIX_SPIKE: VIX >10% above EMA20 → skip AUD/JPY + CAD/JPY, 0.50× size
+ *   NORMAL:    catch-all → 1.0× size, all pairs
  *
  * DUBAI SESSION WINDOWS (UTC+4):
  *   10:30 – 11:30  PRE-LONDON ORB RANGE  → GBP/JPY range building
@@ -116,6 +128,9 @@ function updateDashboard() {
   // Fetch all macro data once (shared across pairs, cached 6h)
   var macroData = fetchAllMacro();
 
+  // Compute daily regime (BULL / OIL_WEAK / VIX_SPIKE / NORMAL)
+  var regime = calcRegime(macroData);
+
   // Per-pair TREND signals (CAD/CHF, AUD/JPY, CAD/JPY)
   var pairs    = ['CADCHF', 'AUDJPY', 'CADJPY'];
   var results  = {};
@@ -130,19 +145,19 @@ function updateDashboard() {
 
     var macro  = calcMacroForPair(p, macroData);
     var tech   = buildTechnicals(p, bars15, bars1h, nowUtc);
-    var setup  = evalSetup(p, macro, tech, nowUtc, macroData);
-    var trade  = setup.active ? calcTrade(p, setup, tech, curEq) : null;
+    var setup  = evalSetup(p, macro, tech, nowUtc, macroData, regime);
+    var trade  = setup.active ? calcTrade(p, setup, tech, curEq, regime) : null;
     results[p] = { macro: macro, tech: tech, setup: setup, trade: trade };
   });
 
   // GBP/JPY ORB signal (London open breakout)
   Utilities.sleep(9000);
   var gbpjpyBars15 = fetchBars('GBP/JPY', '15min', 100);
-  var orbSignal = evalOrbSignal(gbpjpyBars15, nowUtc, macroData, curEq);
+  var orbSignal = evalOrbSignal(gbpjpyBars15, nowUtc, macroData, curEq, regime);
 
   var ftmo = calcFtmo(curEq, dayStartEq);
 
-  writeSheet(dash, now, nowUtc, results, orbSignal, ftmo, curEq, dayStartEq);
+  writeSheet(dash, now, nowUtc, results, orbSignal, ftmo, curEq, dayStartEq, regime);
 }
 
 // ── TWELVE DATA SYMBOL MAP ────────────────────────────────────────────────────
@@ -151,7 +166,7 @@ function tdSymbol(p) {
 }
 
 // ── GBP/JPY ORB SIGNAL ────────────────────────────────────────────────────────
-function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
+function evalOrbSignal(bars15, nowUtcH, macroData, curEq, regime) {
   var today  = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
   var places = 3;  // JPY pair
 
@@ -216,7 +231,46 @@ function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
     if (!carryOk) direction = 0;
   }
 
-  // 7. Build trade if signal active
+  // 7. V13 technical filters for ORB LONG
+  var orbTechChecks = [];
+  var orbTechBlocked = false;
+  if (direction === 1 && bars15 && bars15.length >= 35) {
+    var c15orb   = bars15.map(function(b){ return b.c; });
+    var v15orb   = bars15.map(function(b){ return b.v || 0; });
+    // MACD histogram > 0
+    var orbMacd  = calcMacdHistogram(c15orb);
+    var orbMacdOk = orbMacd !== null ? orbMacd > 0 : true;
+    orbTechChecks.push({ label: 'MACD hist > 0', ok: orbMacdOk,
+      note: orbMacd !== null ? 'hist=' + orbMacd.toFixed(6) : '—' });
+    // RSI 15m > 50 (momentum building for breakout)
+    var orbRsi   = calcRsi14(c15orb);
+    var orbRsiOk = orbRsi !== null ? orbRsi > 50 : true;
+    orbTechChecks.push({ label: 'RSI(14) 15m > 50', ok: orbRsiOk,
+      note: orbRsi !== null ? 'RSI=' + orbRsi.toFixed(1) : '—' });
+    // Volume ≥ 120%
+    var orbVolN  = Math.min(20, v15orb.length - 1), orbVolSum = 0;
+    for (var ovi = v15orb.length - 1 - orbVolN; ovi < v15orb.length - 1; ovi++) orbVolSum += v15orb[ovi];
+    var orbAvgVol = orbVolN > 0 ? orbVolSum / orbVolN : 0;
+    var orbVolRatio = orbAvgVol > 0 ? v15orb[v15orb.length-1] / orbAvgVol : null;
+    var orbVolOk = orbVolRatio !== null ? orbVolRatio >= 1.20 : true;
+    orbTechChecks.push({ label: 'Volume ≥ 120% avg', ok: orbVolOk,
+      note: orbVolRatio !== null ? (orbVolRatio*100).toFixed(0) + '%' : 'no data' });
+    // OBV > EMA10
+    var orbObv   = calcObvAboveEma(c15orb, v15orb);
+    var orbObvOk = orbObv !== null ? orbObv === true : true;
+    orbTechChecks.push({ label: 'OBV > OBV EMA10', ok: orbObvOk,
+      note: orbObv !== null ? (orbObv ? 'bullish flow ✓' : 'bearish flow ✗') : '—' });
+
+    if (!orbMacdOk || !orbRsiOk || !orbVolOk || !orbObvOk) {
+      orbTechBlocked = true;
+      direction = 0;
+    }
+  }
+
+  // 8. Regime size adjustment for ORB
+  var orbSizeAdj = (regime && regime.sizeAdj) ? regime.sizeAdj : 1.0;
+
+  // 9. Build trade if signal active
   var trade = null;
   if (direction === 1 && rangeHigh && price && rangeLow) {
     var slPx   = rangeLow;
@@ -224,7 +278,7 @@ function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
     var tp2Px  = price + ORB_TP2_MULT * orbRange;
     var slDist = price - slPx;
     var slPips = Math.round(slDist / PIP_SIZE['GBPJPY']);
-    var risk   = curEq * ORB_RISK;
+    var risk   = curEq * ORB_RISK * orbSizeAdj;
     var lots   = slPips > 0 ? Math.max(0.01, Math.round(risk / (slPips * PIP_VALUE['GBPJPY']) * 100) / 100) : 0;
     trade = {
       dir: 'LONG', entry: price,
@@ -242,7 +296,10 @@ function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
 
   // Status label
   var status;
-  if (nowUtcH < ORB_RANGE_START_H) {
+  if (orbTechBlocked) {
+    var failedChecks = orbTechChecks.filter(function(c){ return !c.ok; }).map(function(c){ return c.label; });
+    status = 'BLOCKED — V13 filters failed: ' + failedChecks.join(', ');
+  } else if (nowUtcH < ORB_RANGE_START_H) {
     status = 'WAITING — Asian session in progress (range builds at 10:30 DXB)';
   } else if (nowUtcH < ORB_RANGE_END_H) {
     status = 'BUILDING RANGE — ' + (rangeBars.length) + ' bars so far (10:30–11:30 DXB)';
@@ -266,6 +323,7 @@ function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
     rangeBarsCount: rangeBars.length, inEntry: inEntry,
     breakLong: breakLong, breakShort: breakShort, asianBlock: asianBlock,
     direction: direction, price: price, carryOk: carryOk, carryNote: carryNote,
+    orbTechChecks: orbTechChecks, orbTechBlocked: orbTechBlocked,
     trade: trade, status: status, nowUtcH: nowUtcH, places: places
   };
 }
@@ -280,7 +338,7 @@ function fetchBars(symbol, interval, n) {
     var j = JSON.parse(r.getContentText());
     if (!j.values || j.status === 'error') return [];
     return j.values.map(function(v) {
-      return { dt: v.datetime, o: +v.open, h: +v.high, l: +v.low, c: +v.close };
+      return { dt: v.datetime, o: +v.open, h: +v.high, l: +v.low, c: +v.close, v: +v.volume || 0 };
     }).reverse();
   } catch(e) { return []; }
 }
@@ -322,6 +380,69 @@ function fetchAllMacro() {
 
   cache.put(key, JSON.stringify(data), 21600);
   return data;
+}
+
+// ── REGIME ENGINE ─────────────────────────────────────────────────────────────
+function calcRegime(d) {
+  var oil = d.oil, vix = d.vix, cop = d.cop, spx = d.spx;
+  var oilWeak = false, vixSpike = false, copBull = false, spxBull = false;
+  var oilNote = '—', vixNote = '—', copNote = '—', spxNote = '—';
+
+  if (oil && oil.length >= 52) {
+    var oe = calcEma(oil, 50); var om = oil.length;
+    oilWeak = oil[om-2] < oe[om-2];
+    oilNote = 'Oil $' + oil[om-2].toFixed(1) + ' vs EMA50 $' + oe[om-2].toFixed(1) +
+              (oilWeak ? ' → WEAK ↓' : ' → OK ↑');
+  }
+  if (vix && vix.length >= 22) {
+    var ve = calcEma(vix, 20); var vm = vix.length;
+    vixSpike = vix[vm-2] > ve[vm-2] * 1.10;
+    vixNote = 'VIX ' + vix[vm-2].toFixed(1) + ' vs EMA20×1.1 ' + (ve[vm-2]*1.10).toFixed(1) +
+              (vixSpike ? ' → SPIKE ⚠' : ' → calm ✓');
+  }
+  if (cop && cop.length >= 52) {
+    var ce = calcEma(cop, 50); var cm = cop.length;
+    copBull = cop[cm-2] > ce[cm-2];
+    copNote = 'Copper $' + cop[cm-2].toFixed(2) + ' vs EMA50 $' + ce[cm-2].toFixed(2);
+  }
+  if (spx && spx.length >= 52) {
+    var se = calcEma(spx, 50); var sm = spx.length;
+    spxBull = spx[sm-2] > se[sm-2];
+    spxNote = 'SPX ' + Math.round(spx[sm-2]) + ' vs EMA50 ' + Math.round(se[sm-2]);
+  }
+
+  var bull = !oilWeak && !vixSpike && copBull && spxBull;
+  var components = [
+    { name: 'Oil vs EMA50', note: oilNote, ok: !oilWeak },
+    { name: 'VIX vs EMA20×1.1', note: vixNote, ok: !vixSpike },
+    { name: 'Copper vs EMA50', note: copNote, ok: copBull },
+    { name: 'SPX vs EMA50', note: spxNote, ok: spxBull }
+  ];
+
+  if (vixSpike) return {
+    label: 'VIX_SPIKE', color: '#ff5252', bg: '#2a0a0a',
+    description: 'VIX >10% above EMA20 — skip AUD/JPY + CAD/JPY — size 0.50×',
+    sizeAdj: 0.50, skipPairs: { AUDJPY: true, CADJPY: true }, cadchfShortThresh: -6,
+    components: components
+  };
+  if (oilWeak) return {
+    label: 'OIL_WEAK', color: '#ff9800', bg: '#2a1a00',
+    description: 'Oil below EMA50 — skip CAD/JPY — CAD/CHF short at −4 — size 0.75×',
+    sizeAdj: 0.75, skipPairs: { CADJPY: true }, cadchfShortThresh: -4,
+    components: components
+  };
+  if (bull) return {
+    label: 'BULL', color: '#00e676', bg: '#0a2a14',
+    description: 'Full bull regime — all pairs active — size 1.0×',
+    sizeAdj: 1.0, skipPairs: {}, cadchfShortThresh: -6,
+    components: components
+  };
+  return {
+    label: 'NORMAL', color: '#00bcd4', bg: '#0a1628',
+    description: 'Normal regime — all pairs active — size 1.0×',
+    sizeAdj: 1.0, skipPairs: {}, cadchfShortThresh: -6,
+    components: components
+  };
 }
 
 // ── CALC MACRO SCORE PER PAIR ─────────────────────────────────────────────────
@@ -483,13 +604,28 @@ function jpyCarryGuard(macroData) {
 
 // ── BUILD TECHNICALS ──────────────────────────────────────────────────────────
 function buildTechnicals(pairKey, bars15, bars1h, nowUtcH) {
-  if (!bars15 || bars15.length < 25) return null;
+  if (!bars15 || bars15.length < 35) return null;
   var c15  = bars15.map(function(b){ return b.c; });
   var e9   = calcEma(c15, 9);
   var e21  = calcEma(c15, 21);
   var atrV = calcAtr14(bars15);
   var last = bars15[bars15.length - 1];
   var price = last.c;
+
+  // V13 technical filters — 15m indicators
+  var macdHist = calcMacdHistogram(c15);
+  var rsi15m   = calcRsi14(c15);
+
+  // Volume ratio: last bar / 20-bar rolling average
+  var vols15  = bars15.map(function(b){ return b.v || 0; });
+  var volSum  = 0;
+  var volN    = Math.min(20, vols15.length - 1);
+  for (var vi = vols15.length - 1 - volN; vi < vols15.length - 1; vi++) volSum += vols15[vi];
+  var avgVol  = volN > 0 ? volSum / volN : 0;
+  var volRatio = (avgVol > 0) ? (vols15[vols15.length - 1] / avgVol) : null;
+
+  // OBV above EMA10
+  var obvAboveEma = calcObvAboveEma(c15, vols15);
 
   var e9_1h = null, e21_1h = null, e50_1h = null, rsi = null;
   var e9_4h = null, e21_4h = null;
@@ -527,7 +663,14 @@ function buildTechnicals(pairKey, bars15, bars1h, nowUtcH) {
     e9_4h: e9_4h,  e21_4h: e21_4h,
     rsi:   rsi,
     vwap:  sv.vwap, vwapStd: sv.std, vwapBars: sv.n,
-    vwapDist: sv.std > 1e-8 && sv.vwap ? (price - sv.vwap) / sv.std : 99
+    vwapDist: sv.std > 1e-8 && sv.vwap ? (price - sv.vwap) / sv.std : 99,
+    // V13 technical filter values
+    macdHist:   macdHist,
+    rsi15m:     rsi15m,
+    volRatio:   volRatio,
+    avgVol:     avgVol,
+    lastVol:    vols15[vols15.length - 1],
+    obvAboveEma: obvAboveEma
   };
 }
 
@@ -549,13 +692,24 @@ function calcSessionVwap(bars15, vwapStartH) {
 }
 
 // ── EVAL SETUP PER PAIR ───────────────────────────────────────────────────────
-function evalSetup(pairKey, macro, tech, nowUtcH, macroData) {
-  if (!tech || macro.error || macro.dir === 0)
+function evalSetup(pairKey, macro, tech, nowUtcH, macroData, regime) {
+  // Regime pair exclusion
+  if (regime && regime.skipPairs && regime.skipPairs[pairKey])
+    return { active: false, dir: null,
+             reason: 'SKIPPED — regime ' + regime.label + ' excludes ' + pairKey,
+             checks: [] };
+
+  // Apply OIL_WEAK lower short threshold for CAD/CHF
+  var shortThresh = (regime && regime.cadchfShortThresh) ? regime.cadchfShortThresh : -6;
+  var adjustedDir = macro.dir;
+  if (pairKey === 'CADCHF' && macro.score <= shortThresh && macro.score > -6) adjustedDir = -1;
+
+  if (!tech || macro.error || (macro.dir === 0 && adjustedDir === 0))
     return { active: false, dir: null,
              reason: macro.error || (macro.gated ? 'EMA20 gate — pair on wrong side of trend' : 'No macro signal (|score| < 6)'),
              checks: [] };
 
-  var dir    = macro.dir;   // 1 = LONG, -1 = SHORT
+  var dir    = adjustedDir || macro.dir;   // 1 = LONG, -1 = SHORT
   var price  = tech.price;
   var isJpy  = LONG_ONLY[pairKey];
 
@@ -632,14 +786,52 @@ function evalSetup(pairKey, macro, tech, nowUtcH, macroData) {
     checks.push({ label: 'JPY carry guard', ok: carryOk, note: carryGuard.note });
   }
 
+  // V13 TECHNICAL FILTERS
+  // 1. MACD(12,26,9) histogram > 0
+  var macdOk = tech.macdHist !== null
+    ? (dir === 1 ? tech.macdHist > 0 : tech.macdHist < 0) : true;
+  checks.push({ label: 'MACD(12,26,9) histogram',
+    ok: macdOk,
+    note: tech.macdHist !== null
+      ? 'hist=' + tech.macdHist.toFixed(6) + (macdOk ? ' ✓ momentum aligned' : ' ✗ momentum against')
+      : 'insufficient data' });
+
+  // 2. RSI 15m: <55 longs (pullback), >45 shorts
+  var rsi15Thresh = dir === 1 ? 55 : 45;
+  var rsi15Ok = tech.rsi15m !== null
+    ? (dir === 1 ? tech.rsi15m < rsi15Thresh : tech.rsi15m > rsi15Thresh) : true;
+  checks.push({ label: 'RSI(14) 15m ' + (dir===1?'< 55 (buy pullback)':'> 45 (short pullback)'),
+    ok: rsi15Ok,
+    note: tech.rsi15m !== null
+      ? 'RSI15m=' + tech.rsi15m.toFixed(1) + (rsi15Ok ? ' ✓' : ' ✗ outside pullback zone')
+      : 'insufficient data' });
+
+  // 3. Volume ≥ 120% of 20-bar average
+  var volOk = tech.volRatio !== null ? tech.volRatio >= 1.20 : true;
+  checks.push({ label: 'Volume ≥ 120% of avg',
+    ok: volOk,
+    note: tech.volRatio !== null
+      ? (tech.volRatio * 100).toFixed(0) + '% of avg (last=' + Math.round(tech.lastVol) + ' avg=' + Math.round(tech.avgVol) + ')' + (volOk ? ' ✓' : ' ✗ low volume')
+      : 'no volume data — check TwelveData subscription' });
+
+  // 4. OBV above EMA10
+  var obvOk = tech.obvAboveEma !== null
+    ? (dir === 1 ? tech.obvAboveEma === true : tech.obvAboveEma === false) : true;
+  checks.push({ label: 'OBV vs OBV EMA10',
+    ok: obvOk,
+    note: tech.obvAboveEma !== null
+      ? (tech.obvAboveEma ? 'OBV above EMA10' : 'OBV below EMA10') + (obvOk ? ' ✓ flow aligned' : ' ✗ flow diverging')
+      : 'insufficient data' });
+
   var allOk = inEntry && (h4ok !== false) && (h1ok !== false) && (e50ok !== false)
-              && m15ok && vwapOk && rsiOk && atrOk && carryOk;
+              && m15ok && vwapOk && rsiOk && atrOk && carryOk
+              && macdOk && rsi15Ok && volOk && obvOk;
 
   return { active: allOk, dir: dir, sessName: sessName, checks: checks };
 }
 
 // ── CALC TRADE (entry, SL, TP, lots) ─────────────────────────────────────────
-function calcTrade(pairKey, setup, tech, currentEq) {
+function calcTrade(pairKey, setup, tech, currentEq, regime) {
   var dir    = setup.dir;
   var price  = tech.price;
   var atr    = tech.atr;
@@ -658,7 +850,8 @@ function calcTrade(pairKey, setup, tech, currentEq) {
   var tp1Pips = Math.round(tp1Pts / dp);
   var tp2Pips = Math.round(tp2Pts / dp);
 
-  var risk  = currentEq * RISK_TIER[pairKey];
+  var sizeAdj = (regime && regime.sizeAdj) ? regime.sizeAdj : 1.0;
+  var risk  = currentEq * RISK_TIER[pairKey] * sizeAdj;
   var pv    = PIP_VALUE[pairKey];
   var lots  = Math.max(0.01, Math.round(risk / (slPips * pv) * 100) / 100);
   var lots1 = Math.max(0.01, Math.round(lots * TP1_FRAC * 100) / 100);
@@ -673,7 +866,7 @@ function calcTrade(pairKey, setup, tech, currentEq) {
     slPips: slPips, tp1Pips: tp1Pips, tp2Pips: tp2Pips,
     rr1: rr1, rr2: rr2, lots: lots, lots1: lots1, lots2: lots2,
     risk: risk, atr: atr, atrPips: Math.round(atr / dp),
-    places: places
+    places: places, sizeAdj: sizeAdj
   };
 }
 
@@ -691,7 +884,7 @@ function calcFtmo(eq, dayStart) {
 }
 
 // ── SHEET WRITER ─────────────────────────────────────────────────────────────
-function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, dayStartEq) {
+function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, dayStartEq, regime) {
   sheet.clear();
   // Column widths: A=200, B=90, C=90, D=90, E=90, F=90, G=130
   [200, 90, 90, 90, 90, 90, 130].forEach(function(w, i) { sheet.setColumnWidth(i+1, w); });
@@ -705,6 +898,23 @@ function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, daySta
      {bg:'#0a1628', fg:'#00bcd4', sz:16, bold:true, h:44}); r++;
   mr(sheet, r, 6, dubaiStr + '  ·  ' + utcStr + '  ·  Auto-refreshes every 5 min',
      {bg:'#060e1a', fg:'#334455', sz:10, h:24}); r++;
+
+  // ═══ REGIME BAR ══════════════════════════════════════════════════════════
+  r++;
+  if (regime) {
+    var regBg = regime.bg || '#0a1628';
+    var regFg = regime.color || '#00bcd4';
+    mr(sheet, r, 6,
+       '▶  REGIME: ' + regime.label + '   —   ' + regime.description,
+       {bg: regBg, fg: regFg, sz: 13, bold: true, h: 36}); r++;
+    regime.components.forEach(function(rc) {
+      var rcBg = rc.ok ? '#0a1a0a' : '#1a0a0a';
+      var rcFg = rc.ok ? '#00c853' : '#ff5252';
+      mr(sheet, r, 6,
+         (rc.ok ? '✓' : '✗') + '  ' + rc.name + '  —  ' + rc.note,
+         {bg: rcBg, fg: rcFg, sz: 9, h: 22}); r++;
+    });
+  }
 
   // ═══ SESSION CLOCK ════════════════════════════════════════════════════════
   r++;
@@ -934,8 +1144,9 @@ function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, daySta
          '  |  When TP1 hit → move SL to ' + trade.entry.toFixed(pl) + ' (breakeven)  |  TP2 ' + trade.tp2.toFixed(pl) + ' (close ' + trade.lots2.toFixed(2) + ' lots)',
          {bg:'#080e1a', fg:'#5577aa', sz:9, h:36}); r++;
       mr(sheet, r, 6,
-         'Pip value ≈ $' + PIP_VALUE[p].toFixed(2) + '/lot  |  ' + RISK_TIER[p]*100 + '% risk tier  |  ' +
-         'Verify exact lot size & pip value in MT4 Market Watch before entering',
+         'Pip value ≈ $' + PIP_VALUE[p].toFixed(2) + '/lot  |  ' + RISK_TIER[p]*100 + '% risk tier' +
+         (trade.sizeAdj < 1 ? '  |  ' + (trade.sizeAdj*100).toFixed(0) + '% size (regime ' + (regime?regime.label:'') + ')' : '') +
+         '  |  Verify exact lot size & pip value in MT4 Market Watch before entering',
          {bg:'#050a10', fg:'#334455', sz:8, h:24}); r++;
     }
   });
@@ -1037,12 +1248,22 @@ function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, daySta
        ' (close ' + orbTrade.lots2.toFixed(2) + ' lots)  |  Time-exit if no TP by 13:00 DXB',
        {bg:'#080e1a', fg:'#5577aa', sz:9, h:36}); r++;
     mr(sheet, r, 6,
-       'ORB edge: 58% WR  avg +0.150R  (V10 backtest Sep 2024–May 2026, 105 trades, p=0.0065)  |  1% risk  |  London open only',
+       'ORB edge: 57% WR  avg +0.137R  (V13 backtest Sep 2024–May 2026, 97 trades, p=0.0001)  |  1% risk  |  London open only  |  4 tech filters active',
        {bg:'#050a10', fg:'#334455', sz:8, h:24}); r++;
   } else {
     // Show carry guard status if relevant
     if (orbSignal.carryNote) {
       mr(sheet, r, 6, orbSignal.carryNote, {bg:'#0a0e1e', fg:'#607d8b', sz:9, h:24}); r++;
+    }
+    // Show V13 tech filter results if in entry window
+    if (orbSignal.orbTechChecks && orbSignal.orbTechChecks.length) {
+      mr(sheet, r, 6, 'V13 TECHNICAL FILTERS (ORB)', {bg:'#0a0e1e', fg:'#334466', sz:9, bold:true, h:20}); r++;
+      orbSignal.orbTechChecks.forEach(function(c) {
+        var bg = c.ok ? '#0a1a0a' : '#1a0a0a';
+        var fg = c.ok ? '#00c853' : '#ff5252';
+        mr(sheet, r, 6, (c.ok ? '✓  ' : '✗  ') + c.label + '   —   ' + c.note,
+           {bg:bg, fg:fg, sz:10, h:24}); r++;
+      });
     }
   }
 
@@ -1125,13 +1346,16 @@ function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, daySta
   // ═══ FOOTER ═══════════════════════════════════════════════════════════════
   r++;
   mr(sheet, r, 6,
-     'V10 Portfolio · Sep 2024–May 2026 · +142.8% ROI · Sharpe 1.89 · p=0.0065 · Floor ✓ · 2.95 trades/wk',
+     'V13 Portfolio · Sep 2024–May 2026 · +109.8% ROI · Sharpe 2.94 · Max DD 9.6% · p=0.0001 ✓ · Floor ✓ · 1.61 trades/wk · 18/21 positive months',
      {bg:'#040810', fg:'#1a2a3a', sz:9, h:24}); r++;
   mr(sheet, r, 6,
-     'TREND: CAD/CHF 2% WR49% avgR+0.36  |  AUD/JPY 1.5% WR39% avgR+0.15 (long only)  |  CAD/JPY 1% WR40% avgR+0.14 (long only)',
+     'TREND: CAD/CHF 2% WR63% avgR+0.90  |  AUD/JPY 1.5% WR56% avgR+0.63 (long only)  |  CAD/JPY 1% WR55% avgR+0.70 (long only)',
      {bg:'#040810', fg:'#1a2a3a', sz:8, h:22}); r++;
   mr(sheet, r, 6,
-     'ORB: GBP/JPY 1% WR58% avgR+0.15 (long only, London open)  |  Trend SL=0.75×ATR  TP1=1.5×ATR  TP2=2.5×ATR  |  ORB SL=range low  TP1=1.5×range  TP2=2.5×range',
+     'ORB: GBP/JPY 1% WR57% avgR+0.14 (long only, London open)  |  Trend SL=0.75×ATR  TP1=1.5×ATR  TP2=2.5×ATR  |  ORB SL=range low  TP1=1.5×range  TP2=2.5×range',
+     {bg:'#040810', fg:'#1a2a3a', sz:8, h:22}); r++;
+  mr(sheet, r, 6,
+     'V13 filters: MACD(12,26,9) hist>0 · RSI15m <55 longs/>45 shorts · Volume ≥120% avg · OBV > OBV_EMA10  |  Regime: BULL 1.0× · OIL_WEAK 0.75× · VIX_SPIKE 0.50×',
      {bg:'#040810', fg:'#1a2a3a', sz:8, h:22});
 
   SpreadsheetApp.flush();
@@ -1183,6 +1407,26 @@ function resample4h(bars1h) {
 }
 
 function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+function calcMacdHistogram(closes) {
+  if (closes.length < 35) return null;
+  var ema12    = calcEma(closes, 12);
+  var ema26    = calcEma(closes, 26);
+  var macdLine = ema12.map(function(v, i) { return v - ema26[i]; });
+  var signal   = calcEma(macdLine, 9);
+  return macdLine[macdLine.length - 1] - signal[signal.length - 1];
+}
+
+function calcObvAboveEma(closes, volumes) {
+  if (!closes || closes.length < 12 || closes.length !== volumes.length) return null;
+  var obv = [0];
+  for (var i = 1; i < closes.length; i++) {
+    var sign = closes[i] > closes[i-1] ? 1 : closes[i] < closes[i-1] ? -1 : 0;
+    obv.push(obv[i-1] + sign * volumes[i]);
+  }
+  var obvEma = calcEma(obv, 10);
+  return obv[obv.length - 1] > obvEma[obvEma.length - 1];
+}
 
 // ── CELL HELPERS ─────────────────────────────────────────────────────────────
 function cl(sheet, row, col, val, opts) {
