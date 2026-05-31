@@ -5,20 +5,25 @@
  * Account: $120,000  |  Target: $132,000 (+10%)  |  Floor: $108,000 (-10%)
  * Daily limit: -$6,000
  *
- * V8 Portfolio Stats (Sep 2024 – May 2026, 2% / 1.5% / 1% risk tiers):
- *   ROI +122.2%  |  Sharpe 1.30  |  p=0.045 ✓  |  Floor ✓  |  25% monthly FTMO pass rate
- *   CAD/CHF  WR 50%  avgR +0.322  0.84/wk  (long + short)  ← primary signal
- *   AUD/JPY  WR 37%  avgR +0.029  2.40/wk  (LONG ONLY — carry trade)
- *   CAD/JPY  WR 36%  avgR +0.008  1.41/wk  (LONG ONLY — carry trade)
+ * V10 Portfolio Stats (Sep 2024 – May 2026):
+ *   ROI +142.8%  |  Sharpe 1.89  |  p=0.0065 ✓  |  Floor ✓  |  2.95 trades/week
+ *   TREND: CAD/CHF 2%  WR 49%  avgR +0.357  (long + short)  ← primary signal
+ *          AUD/JPY 1.5% WR 39%  avgR +0.146  (LONG ONLY — carry trade)
+ *          CAD/JPY 1%   WR 40%  avgR +0.144  (LONG ONLY — carry trade)
+ *   ORB:   GBP/JPY 1%   WR 58%  avgR +0.150  (LONG ONLY — London open breakout)
  *
  * DUBAI SESSION WINDOWS (UTC+4):
- *   11:30 – 14:00  LONDON  → All 3 pairs  (primary session)
- *   18:00 – 21:00  NY      → All 3 pairs  (secondary session)
+ *   10:30 – 11:30  PRE-LONDON ORB RANGE  → GBP/JPY range building
+ *   11:30 – 13:00  LONDON ORB ENTRY      → GBP/JPY breakout entry window
+ *   11:30 – 14:00  LONDON TREND          → CAD/CHF  AUD/JPY  CAD/JPY
+ *   18:00 – 21:00  NY TREND              → CAD/CHF  AUD/JPY  CAD/JPY
  *
  * WHEN TO CHECK (Dubai time):
- *   11:15  Pre-London   — All pairs, most important check of day
- *   18:00  NY opens     — All pairs evening check
- *   21:00  NY closes    — Manage any open trades
+ *   10:15  Pre-ORB     — Check Asian session bias for GBP/JPY
+ *   11:15  Pre-London  — All pairs, most important check of day
+ *   11:30  London open — ORB breakout trigger + trend entries begin
+ *   18:00  NY opens    — Trend pairs evening check
+ *   21:00  NY closes   — Manage any open trades
  *
  * SETUP:
  *   1. sheets.new → Extensions → Apps Script → paste → Save
@@ -43,12 +48,12 @@ var TP2_FRAC     = 0.40;
 var RISK_TIER = { 'CADCHF': 0.020, 'AUDJPY': 0.015, 'CADJPY': 0.010 };
 
 // Pip sizes (JPY pairs use 0.01, others use 0.0001)
-var PIP_SIZE = { 'CADCHF': 0.0001, 'AUDJPY': 0.01, 'CADJPY': 0.01 };
+var PIP_SIZE = { 'CADCHF': 0.0001, 'AUDJPY': 0.01, 'CADJPY': 0.01, 'GBPJPY': 0.01 };
 
 // Pip value per standard lot in USD (approximations — verify in MT4 Market Watch)
 // CAD/CHF: 10 CHF/pip × CHF/USD ≈ $8.50
-// AUD/JPY & CAD/JPY: 1000 JPY/pip ÷ USD/JPY — varies with rate, ~$6.70 at USDJPY=150
-var PIP_VALUE = { 'CADCHF': 8.50, 'AUDJPY': 6.70, 'CADJPY': 6.70 };
+// AUD/JPY & CAD/JPY & GBP/JPY: 1000 JPY/pip ÷ USD/JPY — ~$6.70-$7.40 depending on rate
+var PIP_VALUE = { 'CADCHF': 8.50, 'AUDJPY': 6.70, 'CADJPY': 6.70, 'GBPJPY': 7.40 };
 
 // ATR validity range (atr/price ratio) — outside = skip noisy/illiquid bars
 var ATR_RANGE = { 'CADCHF': [0.0002, 0.0080], 'AUDJPY': [0.0004, 0.0120], 'CADJPY': [0.0004, 0.0120] };
@@ -57,9 +62,18 @@ var ATR_RANGE = { 'CADCHF': [0.0002, 0.0080], 'AUDJPY': [0.0004, 0.0120], 'CADJP
 var LONG_ONLY = { 'AUDJPY': true, 'CADJPY': true };
 
 // Sessions (UTC decimal hours)
-var SESS_ASIAN  = { vwap: 0.0,  open: 0.5,  close: 3.0  };
 var SESS_LONDON = { vwap: 7.0,  open: 7.5,  close: 10.0 };
 var SESS_NY     = { vwap: 13.5, open: 14.0, close: 17.0 };
+
+// ORB (Opening Range Breakout) config — GBP/JPY only, London open
+var ORB_RANGE_START_H = 6.5;    // 06:30 UTC = 10:30 DXB — pre-London range begins
+var ORB_RANGE_END_H   = 7.5;    // 07:30 UTC = 11:30 DXB — London opens, range locked
+var ORB_ENTRY_END_H   = 9.0;    // 09:00 UTC = 13:00 DXB — last ORB entry bar
+var ORB_MIN_BARS      = 3;      // minimum 15m bars to define valid range
+var ORB_BREAKOUT_CONF = 0.10;   // price must breach 10% of range beyond edge
+var ORB_RISK          = 0.010;  // 1% risk per ORB trade
+var ORB_TP1_MULT      = 1.5;    // TP1 = entry + 1.5×range
+var ORB_TP2_MULT      = 2.5;    // TP2 = entry + 2.5×range
 
 // Dubai offset (UTC+4, no DST — UAE never changes clocks)
 var DUBAI_OFFSET_H = 4;
@@ -78,8 +92,10 @@ function setupTrigger() {
       '  G2 = your current MT5 equity\n' +
       '  G3 = equity at start of today\n\n' +
       'Dubai check times:\n' +
-      '  11:15  Pre-London (all pairs)\n' +
-      '  18:00  NY opens (all pairs)\n' +
+      '  10:15  Pre-ORB — Asian bias for GBP/JPY\n' +
+      '  11:15  Pre-London — all pairs + ORB range set\n' +
+      '  11:30  London open — ORB breakout + TREND entries\n' +
+      '  18:00  NY opens (TREND pairs only)\n' +
       '  21:00  NY closes (manage open trades)'
     );
   } catch(e) {}
@@ -100,7 +116,7 @@ function updateDashboard() {
   // Fetch all macro data once (shared across pairs, cached 6h)
   var macroData = fetchAllMacro();
 
-  // Per-pair signals
+  // Per-pair TREND signals (CAD/CHF, AUD/JPY, CAD/JPY)
   var pairs    = ['CADCHF', 'AUDJPY', 'CADJPY'];
   var results  = {};
 
@@ -119,14 +135,139 @@ function updateDashboard() {
     results[p] = { macro: macro, tech: tech, setup: setup, trade: trade };
   });
 
+  // GBP/JPY ORB signal (London open breakout)
+  Utilities.sleep(9000);
+  var gbpjpyBars15 = fetchBars('GBP/JPY', '15min', 100);
+  var orbSignal = evalOrbSignal(gbpjpyBars15, nowUtc, macroData, curEq);
+
   var ftmo = calcFtmo(curEq, dayStartEq);
 
-  writeSheet(dash, now, nowUtc, results, ftmo, curEq, dayStartEq);
+  writeSheet(dash, now, nowUtc, results, orbSignal, ftmo, curEq, dayStartEq);
 }
 
 // ── TWELVE DATA SYMBOL MAP ────────────────────────────────────────────────────
 function tdSymbol(p) {
   return { 'CADCHF': 'CAD/CHF', 'AUDJPY': 'AUD/JPY', 'CADJPY': 'CAD/JPY' }[p];
+}
+
+// ── GBP/JPY ORB SIGNAL ────────────────────────────────────────────────────────
+function evalOrbSignal(bars15, nowUtcH, macroData, curEq) {
+  var today  = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+  var places = 3;  // JPY pair
+
+  function barDay(b) { return b.dt.substring(0, 10); }
+  function barHour(b) {
+    var t = b.dt.length > 10 ? b.dt.substring(11) : '00:00:00';
+    var parts = t.split(':');
+    return parseInt(parts[0]) + parseInt(parts[1]) / 60;
+  }
+
+  // 1. Asian session (00:00-06:30 UTC = 04:00-10:30 DXB)
+  var asianBars = (bars15 || []).filter(function(b) {
+    var h = barHour(b);
+    return barDay(b) === today && h >= 0 && h < ORB_RANGE_START_H;
+  });
+  var asianHigh = null, asianLow = null, asianClose = null, asianBias = 0;
+  if (asianBars.length >= 4) {
+    asianHigh  = Math.max.apply(null, asianBars.map(function(b){ return b.h; }));
+    asianLow   = Math.min.apply(null, asianBars.map(function(b){ return b.l; }));
+    asianClose = asianBars[asianBars.length - 1].c;
+    asianBias  = asianClose > (asianHigh + asianLow) / 2 ? 1 : -1;
+  }
+
+  // 2. ORB range (06:30-07:30 UTC = 10:30-11:30 DXB)
+  var rangeBars = (bars15 || []).filter(function(b) {
+    var h = barHour(b);
+    return barDay(b) === today && h >= ORB_RANGE_START_H && h < ORB_RANGE_END_H;
+  });
+  var rangeHigh = null, rangeLow = null, orbRange = null;
+  if (rangeBars.length >= ORB_MIN_BARS) {
+    rangeHigh = Math.max.apply(null, rangeBars.map(function(b){ return b.h; }));
+    rangeLow  = Math.min.apply(null, rangeBars.map(function(b){ return b.l; }));
+    orbRange  = rangeHigh - rangeLow;
+  }
+
+  // 3. Breakout detection (07:30-09:00 UTC entry window)
+  var inEntry = nowUtcH >= ORB_RANGE_END_H && nowUtcH <= ORB_ENTRY_END_H;
+  var lastBar = (bars15 && bars15.length) ? bars15[bars15.length - 1] : null;
+  var price   = lastBar ? lastBar.c : null;
+
+  var breakLong = false, breakShort = false, direction = 0;
+  if (rangeHigh && price && inEntry && orbRange > 0) {
+    var conf = ORB_BREAKOUT_CONF * orbRange;
+    breakLong  = price > rangeHigh + conf;
+    breakShort = price < rangeLow  - conf;
+    direction  = breakLong ? 1 : (breakShort ? -1 : 0);
+  }
+
+  // 4. GBP/JPY is LONG ONLY (carry trade)
+  if (direction === -1) direction = 0;
+
+  // 5. Asian bias filter — skip LONG if Asian session was bearish
+  var asianBlock = (direction === 1 && asianBias === -1);
+  if (asianBlock) direction = 0;
+
+  // 6. JPY carry guard
+  var carryOk = true, carryNote = '';
+  if (direction === 1) {
+    var cg = jpyCarryGuard(macroData);
+    carryOk   = !cg.blocked;
+    carryNote = cg.note;
+    if (!carryOk) direction = 0;
+  }
+
+  // 7. Build trade if signal active
+  var trade = null;
+  if (direction === 1 && rangeHigh && price && rangeLow) {
+    var slPx   = rangeLow;
+    var tp1Px  = price + ORB_TP1_MULT * orbRange;
+    var tp2Px  = price + ORB_TP2_MULT * orbRange;
+    var slDist = price - slPx;
+    var slPips = Math.round(slDist / PIP_SIZE['GBPJPY']);
+    var risk   = curEq * ORB_RISK;
+    var lots   = slPips > 0 ? Math.max(0.01, Math.round(risk / (slPips * PIP_VALUE['GBPJPY']) * 100) / 100) : 0;
+    trade = {
+      dir: 'LONG', entry: price,
+      sl: slPx, tp1: tp1Px, tp2: tp2Px,
+      slPips:  slPips,
+      tp1Pips: Math.round(ORB_TP1_MULT * orbRange / PIP_SIZE['GBPJPY']),
+      tp2Pips: Math.round(ORB_TP2_MULT * orbRange / PIP_SIZE['GBPJPY']),
+      rangePips: Math.round(orbRange / PIP_SIZE['GBPJPY']),
+      lots: lots,
+      lots1: Math.max(0.01, Math.round(lots * TP1_FRAC * 100) / 100),
+      lots2: Math.max(0.01, Math.round(lots * TP2_FRAC * 100) / 100),
+      risk: risk, places: places
+    };
+  }
+
+  // Status label
+  var status;
+  if (nowUtcH < ORB_RANGE_START_H) {
+    status = 'WAITING — Asian session in progress (range builds at 10:30 DXB)';
+  } else if (nowUtcH < ORB_RANGE_END_H) {
+    status = 'BUILDING RANGE — ' + (rangeBars.length) + ' bars so far (10:30–11:30 DXB)';
+  } else if (!inEntry) {
+    status = 'ENTRY WINDOW CLOSED (after 13:00 DXB)';
+  } else if (!rangeHigh) {
+    status = 'NO RANGE — insufficient bars during 10:30–11:30 DXB';
+  } else if (direction === 1) {
+    status = 'ACTIVE BREAKOUT — LONG GBP/JPY';
+  } else if (asianBlock) {
+    status = 'BLOCKED — Asian session bearish (no long ORB)';
+  } else if (!carryOk) {
+    status = 'BLOCKED — JPY carry guard (JPY surging)';
+  } else {
+    status = 'IN WINDOW — waiting for breakout above ' + (rangeHigh + ORB_BREAKOUT_CONF * orbRange).toFixed(places);
+  }
+
+  return {
+    asianBias: asianBias, asianHigh: asianHigh, asianLow: asianLow, asianClose: asianClose,
+    rangeHigh: rangeHigh, rangeLow: rangeLow, orbRange: orbRange,
+    rangeBarsCount: rangeBars.length, inEntry: inEntry,
+    breakLong: breakLong, breakShort: breakShort, asianBlock: asianBlock,
+    direction: direction, price: price, carryOk: carryOk, carryNote: carryNote,
+    trade: trade, status: status, nowUtcH: nowUtcH, places: places
+  };
 }
 
 // ── FETCH BARS (Twelve Data) ──────────────────────────────────────────────────
@@ -170,6 +311,7 @@ function fetchAllMacro() {
     cadchf: yf('CADCHF=X', '2y'),
     audjpy: yf('AUDJPY=X', '2y'),
     cadjpy: yf('CADJPY=X', '2y'),
+    gbpjpy: yf('GBPJPY=X', '2y'),
     oil:    yf('CL=F',     '1y'),
     cop:    yf('HG=F',     '1y'),
     spx:    yf('^GSPC',    '1y'),
@@ -549,7 +691,7 @@ function calcFtmo(eq, dayStart) {
 }
 
 // ── SHEET WRITER ─────────────────────────────────────────────────────────────
-function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
+function writeSheet(sheet, now, nowUtcH, results, orbSignal, ftmo, curEq, dayStartEq) {
   sheet.clear();
   // Column widths: A=200, B=90, C=90, D=90, E=90, F=90, G=130
   [200, 90, 90, 90, 90, 90, 130].forEach(function(w, i) { sheet.setColumnWidth(i+1, w); });
@@ -570,8 +712,10 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
      {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
 
   var sessions = [
-    { name:'LONDON', dxbOpen:'11:30', dxbClose:'14:00', utcOpen: 7.5, utcClose:10.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' },
-    { name:'NY',     dxbOpen:'18:00', dxbClose:'21:00', utcOpen:14.0, utcClose:17.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' }
+    { name:'GBP/JPY ORB RANGE', dxbOpen:'10:30', dxbClose:'11:30', utcOpen: 6.5, utcClose:7.5,  pairs:'GBP/JPY  (range building)' },
+    { name:'GBP/JPY ORB ENTRY', dxbOpen:'11:30', dxbClose:'13:00', utcOpen: 7.5, utcClose:9.0,  pairs:'GBP/JPY  (breakout entry)' },
+    { name:'LONDON TREND',      dxbOpen:'11:30', dxbClose:'14:00', utcOpen: 7.5, utcClose:10.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' },
+    { name:'NY TREND',          dxbOpen:'18:00', dxbClose:'21:00', utcOpen:14.0, utcClose:17.0, pairs:'CAD/CHF  AUD/JPY  CAD/JPY' }
   ];
   sessions.forEach(function(s) {
     var active = nowUtcH >= s.utcOpen && nowUtcH <= s.utcClose;
@@ -605,7 +749,6 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
     var macro = res.macro;
     var trade = res.trade;
     var score = macro.score || 0;
-    var dir   = macro.dir;
     var longOnly = LONG_ONLY[p];
 
     var sigText, sigBg, sigFg;
@@ -639,6 +782,27 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
     }
     r++;
   });
+
+  // GBP/JPY ORB row in summary table
+  var orbTrade = orbSignal.trade;
+  var orbSigText = orbTrade ? '▲  LONG  [ORB]' : '○  ' + (
+    orbSignal.nowUtcH < ORB_RANGE_START_H ? 'PRE-RANGE' :
+    orbSignal.nowUtcH < ORB_RANGE_END_H   ? 'BUILDING RANGE' :
+    orbSignal.inEntry                      ? 'IN ENTRY WINDOW' : 'CLOSED');
+  var orbSigBg = orbTrade ? '#0a2a14' : '#0a0e14';
+  var orbSigFg = orbTrade ? '#00e676' : '#334466';
+  cl(sheet, r, 1, 'GBP/JPY  🔼  [ORB]', {bg:'#0a0e1e', fg:'#9575cd', sz:11, bold:true, h:36});
+  cl(sheet, r, 2, orbSigText, {bg:orbSigBg, fg:orbSigFg, sz:11, bold:true});
+  cl(sheet, r, 3, 'ORB', {bg:'#0a0e1e', fg:'#7e57c2', sz:10, bold:true});
+  if (orbTrade) {
+    cl(sheet, r, 4, orbTrade.entry.toFixed(orbTrade.places), {bg:'#0a0e14', fg:'#e0e0e0', sz:10, bold:true});
+    cl(sheet, r, 5, orbTrade.sl.toFixed(orbTrade.places)+'\n−'+orbTrade.slPips+'p', {bg:'#0a0e14', fg:'#ff5252', sz:9});
+    cl(sheet, r, 6, orbTrade.tp1.toFixed(orbTrade.places)+'\n+'+orbTrade.tp1Pips+'p', {bg:'#0a0e14', fg:'#00e676', sz:9});
+    cl(sheet, r, 7, orbTrade.tp2.toFixed(orbTrade.places)+'\n+'+orbTrade.tp2Pips+'p', {bg:'#0a0e14', fg:'#00bcd4', sz:9});
+  } else {
+    [4,5,6,7].forEach(function(c){ cl(sheet, r, c, '—', {bg:'#0a0e1e', fg:'#2a1a4a', sz:10}); });
+  }
+  r++;
 
   // ═══ PER-PAIR DETAIL ══════════════════════════════════════════════════════
   ['CADCHF','AUDJPY','CADJPY'].forEach(function(p) {
@@ -776,6 +940,112 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
     }
   });
 
+  // ═══ GBP/JPY ORB DETAIL ═══════════════════════════════════════════════════
+  r++;
+  var orbActive = !!orbSignal.trade;
+  var orbTitleColor = orbActive ? '#00ff88' : '#7e57c2';
+  var orbTitleBg    = orbActive ? '#0a2a14' : '#0a0e1e';
+  mr(sheet, r, 6,
+     (orbActive ? '●  GBP/JPY  →  ORB LONG  ·  1% risk  ·  London open breakout' :
+                  '○  GBP/JPY  →  ORB  [LONG ONLY — carry trade]'),
+     {bg:orbTitleBg, fg:orbTitleColor, sz:12, bold:true, h:36}); r++;
+
+  // Status banner
+  var statusBg = orbActive ? '#0a2a14' : (orbSignal.asianBlock ? '#2a0a0a' : '#0a0e14');
+  var statusFg = orbActive ? '#00e676' : (orbSignal.asianBlock ? '#ff5252' : '#607d8b');
+  mr(sheet, r, 6, orbSignal.status, {bg:statusBg, fg:statusFg, sz:10, bold:true, h:28}); r++;
+
+  // Asian session row
+  mr(sheet, r, 6, 'ASIAN SESSION BIAS (04:00–10:30 DXB)', {bg:'#0a0e1e', fg:'#334466', sz:9, bold:true, h:20}); r++;
+  if (orbSignal.asianHigh) {
+    var asianBg = orbSignal.asianBias === 1 ? '#0a1a0a' : '#1a0a0a';
+    var asiaBiasText = orbSignal.asianBias === 1
+      ? '▲ BULLISH — close ' + (orbSignal.asianClose||0).toFixed(3) + ' above mid ' + ((orbSignal.asianHigh+orbSignal.asianLow)/2).toFixed(3) + '  →  LONG ORB enabled'
+      : '▼ BEARISH — close ' + (orbSignal.asianClose||0).toFixed(3) + ' below mid ' + ((orbSignal.asianHigh+orbSignal.asianLow)/2).toFixed(3) + '  →  LONG ORB BLOCKED';
+    cl(sheet, r, 1, 'Asian High', {bg:'#0a0e1e', fg:'#445566', sz:9, bold:true, h:26});
+    cl(sheet, r, 2, (orbSignal.asianHigh||0).toFixed(3), {bg:'#0a0e1e', fg:'#9575cd', sz:11});
+    cl(sheet, r, 3, 'Asian Low', {bg:'#0a0e1e', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 4, (orbSignal.asianLow||0).toFixed(3), {bg:'#0a0e1e', fg:'#9575cd', sz:11});
+    sheet.getRange(r, 5, 1, 2).merge().setValue(asiaBiasText)
+      .setBackground(asiaBg).setFontColor(orbSignal.asianBias===1?'#00c853':'#ff5252')
+      .setFontSize(9).setFontWeight('bold').setVerticalAlignment('middle')
+      .setHorizontalAlignment('left').setWrap(true);
+    r++;
+  } else {
+    mr(sheet, r, 6, 'No Asian session data (market may be closed or pre-04:00 DXB)', {bg:'#0a0e1e', fg:'#445566', sz:9, h:24}); r++;
+  }
+
+  // ORB range row
+  mr(sheet, r, 6, 'PRE-LONDON RANGE (10:30–11:30 DXB = 06:30–07:30 UTC)', {bg:'#0a0e1e', fg:'#334466', sz:9, bold:true, h:20}); r++;
+  if (orbSignal.rangeHigh) {
+    var rngPips = Math.round((orbSignal.orbRange||0) / PIP_SIZE['GBPJPY']);
+    var triggerLong  = (orbSignal.rangeHigh + ORB_BREAKOUT_CONF * orbSignal.orbRange).toFixed(3);
+    cl(sheet, r, 1, 'Range High', {bg:'#0a0e1e', fg:'#445566', sz:9, bold:true, h:30});
+    cl(sheet, r, 2, (orbSignal.rangeHigh||0).toFixed(3), {bg:'#0a0e1e', fg:'#00bcd4', sz:12, bold:true});
+    cl(sheet, r, 3, 'Range Low', {bg:'#0a0e1e', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 4, (orbSignal.rangeLow||0).toFixed(3), {bg:'#0a0e1e', fg:'#00bcd4', sz:12, bold:true});
+    cl(sheet, r, 5, 'Range', {bg:'#0a0e1e', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 6, rngPips + ' pips  (' + orbSignal.rangeBarsCount + ' bars)', {bg:'#0a0e1e', fg:'#ffc107', sz:11, bold:true});
+    r++;
+    mr(sheet, r, 6, '⚡ LONG trigger: price > ' + triggerLong + '  (range_high + 10% of range)',
+       {bg:'#0a1a0a', fg:'#00c853', sz:10, h:26}); r++;
+  } else if (orbSignal.nowUtcH >= ORB_RANGE_START_H) {
+    mr(sheet, r, 6, 'Building range (' + orbSignal.rangeBarsCount + ' bars so far — need ' + ORB_MIN_BARS + ')',
+       {bg:'#0a0e1e', fg:'#607d8b', sz:10, h:26}); r++;
+  } else {
+    mr(sheet, r, 6, 'Range builds 10:30–11:30 DXB. Check back at 10:30.',
+       {bg:'#0a0e1e', fg:'#445566', sz:9, h:24}); r++;
+  }
+
+  // Current price in entry window
+  if (orbSignal.inEntry && orbSignal.price) {
+    mr(sheet, r, 6, 'Entry window OPEN (11:30–13:00 DXB)  |  Current GBP/JPY: ' + orbSignal.price.toFixed(3),
+       {bg:'#0a1a0a', fg:'#00e676', sz:10, bold:true, h:26}); r++;
+  }
+
+  // Trade setup if active
+  if (orbTrade) {
+    r++;
+    mr(sheet, r, 6, '⚡ TRADE SETUP — LONG GBP/JPY  ·  LONDON ORB  ·  SL=range low  TP1=1.5×range  TP2=2.5×range',
+       {bg:'#0a2a14', fg:'#00ff88', sz:12, bold:true, h:32}); r++;
+
+    cl(sheet, r, 1, 'ENTRY',              {bg:'#111111', fg:'#445566', sz:9, bold:true, h:22});
+    cl(sheet, r, 2, 'STOP LOSS',          {bg:'#111111', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 3, 'TP1  (close 60%)',   {bg:'#111111', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 4, 'TP2  (close 40%)',   {bg:'#111111', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 5, 'LOTS (total)',        {bg:'#111111', fg:'#445566', sz:9, bold:true});
+    cl(sheet, r, 6, 'RISK',               {bg:'#111111', fg:'#445566', sz:9, bold:true}); r++;
+
+    var op = orbTrade.places;
+    cl(sheet, r, 1, orbTrade.entry.toFixed(op), {bg:'#0a2a14', fg:'#e0e0e0', sz:14, bold:true, h:44});
+    cl(sheet, r, 2, orbTrade.sl.toFixed(op),    {bg:'#2a0a0a', fg:'#ff5252', sz:14, bold:true});
+    cl(sheet, r, 3, orbTrade.tp1.toFixed(op),   {bg:'#0a2a0a', fg:'#00e676', sz:14, bold:true});
+    cl(sheet, r, 4, orbTrade.tp2.toFixed(op),   {bg:'#0a1a2a', fg:'#00bcd4', sz:14, bold:true});
+    cl(sheet, r, 5, orbTrade.lots.toFixed(2),   {bg:'#1a1a0a', fg:'#ffd700', sz:14, bold:true});
+    cl(sheet, r, 6, '$' + Math.round(orbTrade.risk), {bg:'#1a1a0a', fg:'#ffd700', sz:11, bold:true}); r++;
+
+    cl(sheet, r, 1, 'Range: '+orbTrade.rangePips+'p', {bg:'#0a0a0a', fg:'#445566', sz:9, h:26});
+    cl(sheet, r, 2, '−' + orbTrade.slPips + ' pips',    {bg:'#0a0a0a', fg:'#cc4444', sz:10, bold:true});
+    cl(sheet, r, 3, '+'+orbTrade.tp1Pips+'p  R:R '+(orbTrade.tp1Pips/orbTrade.slPips).toFixed(1)+':1', {bg:'#0a0a0a', fg:'#00aa44', sz:10, bold:true});
+    cl(sheet, r, 4, '+'+orbTrade.tp2Pips+'p  R:R '+(orbTrade.tp2Pips/orbTrade.slPips).toFixed(1)+':1', {bg:'#0a0a0a', fg:'#0088bb', sz:10, bold:true});
+    cl(sheet, r, 5, orbTrade.lots1.toFixed(2)+' lots', {bg:'#0a0a0a', fg:'#aaa000', sz:9});
+    cl(sheet, r, 6, orbTrade.lots2.toFixed(2)+' lots', {bg:'#0a0a0a', fg:'#aaa000', sz:9}); r++;
+
+    mr(sheet, r, 6,
+       'MT4/MT5: BUY @ market  |  SL ' + orbTrade.sl.toFixed(op) + '  |  TP1 ' + orbTrade.tp1.toFixed(op) +
+       ' (close ' + orbTrade.lots1.toFixed(2) + ' lots → move SL to entry)  |  TP2 ' + orbTrade.tp2.toFixed(op) +
+       ' (close ' + orbTrade.lots2.toFixed(2) + ' lots)  |  Time-exit if no TP by 13:00 DXB',
+       {bg:'#080e1a', fg:'#5577aa', sz:9, h:36}); r++;
+    mr(sheet, r, 6,
+       'ORB edge: 58% WR  avg +0.150R  (V10 backtest Sep 2024–May 2026, 105 trades, p=0.0065)  |  1% risk  |  London open only',
+       {bg:'#050a10', fg:'#334455', sz:8, h:24}); r++;
+  } else {
+    // Show carry guard status if relevant
+    if (orbSignal.carryNote) {
+      mr(sheet, r, 6, orbSignal.carryNote, {bg:'#0a0e1e', fg:'#607d8b', sz:9, h:24}); r++;
+    }
+  }
+
   // ═══ FTMO TRACKER ══════════════════════════════════════════════════════════
   r++;
   mr(sheet, r, 6, 'FTMO CHALLENGE TRACKER', {bg:'#0a1628', fg:'#445577', sz:10, bold:true, h:22}); r++;
@@ -833,10 +1103,13 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
      {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
 
   var schedule = [
-    ['11:15 DXB', 'Pre-London',  'All 3 pairs', '#2a2a00', 'Most important check of day — review all signals before entry window'],
-    ['11:30 DXB', '▶ LONDON OPEN','All 3 pairs', '#0a2a14', 'Primary session — highest probability entries (UTC 07:30–10:00)'],
-    ['14:00 DXB', 'London closes','—',           '#0a0e14', 'No more London entries — wait for NY'],
-    ['18:00 DXB', '▶ NY OPEN',   'All 3 pairs', '#0a2a14', 'Secondary session — evening Dubai check (UTC 14:00–17:00)'],
+    ['10:15 DXB', 'Pre-ORB',     'GBP/JPY',     '#1a0a2a', 'Check Asian session direction — is Asian bias bullish? If not, no ORB today'],
+    ['10:30 DXB', '▶ RANGE',     'GBP/JPY ORB', '#0a1020', 'Pre-London range begins building (06:30 UTC) — do NOT trade yet'],
+    ['11:15 DXB', 'Pre-London',  'All pairs',   '#2a2a00', 'Most important check — review TREND signals + confirm ORB range set'],
+    ['11:30 DXB', '▶ LON OPEN',  'All pairs',   '#0a2a14', 'ORB breakout entry + TREND session opens (UTC 07:30)'],
+    ['13:00 DXB', 'ORB closes',  'GBP/JPY',     '#0a0e14', 'Last ORB entry bar. Exit any open ORB that has not hit TP'],
+    ['14:00 DXB', 'LON closes',  '—',           '#0a0e14', 'No more London TREND entries — wait for NY'],
+    ['18:00 DXB', '▶ NY OPEN',   'TREND pairs', '#0a2a14', 'Secondary session — CAD/CHF AUD/JPY CAD/JPY (UTC 14:00–17:00)'],
     ['21:00 DXB', 'NY closes',   '—',           '#0a0e14', 'Close any open trades, review day P&L']
   ];
   schedule.forEach(function(row) {
@@ -852,13 +1125,13 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq) {
   // ═══ FOOTER ═══════════════════════════════════════════════════════════════
   r++;
   mr(sheet, r, 6,
-     'V8 Portfolio · Sep 2024–May 2026 · +122.2% ROI · Sharpe 1.30 · p=0.045 · Floor ✓ · 25% FTMO monthly pass rate',
+     'V10 Portfolio · Sep 2024–May 2026 · +142.8% ROI · Sharpe 1.89 · p=0.0065 · Floor ✓ · 2.95 trades/wk',
      {bg:'#040810', fg:'#1a2a3a', sz:9, h:24}); r++;
   mr(sheet, r, 6,
-     'CAD/CHF 2%risk WR50% avgR+0.32  |  AUD/JPY 1.5%risk WR37% avgR+0.03 (long only)  |  CAD/JPY 1%risk WR36% avgR+0.01 (long only)',
+     'TREND: CAD/CHF 2% WR49% avgR+0.36  |  AUD/JPY 1.5% WR39% avgR+0.15 (long only)  |  CAD/JPY 1% WR40% avgR+0.14 (long only)',
      {bg:'#040810', fg:'#1a2a3a', sz:8, h:22}); r++;
   mr(sheet, r, 6,
-     'SL=0.75×ATR  TP1=1.5×ATR close 60%→move SL to entry  TP2=2.5×ATR close 40%  |  NFP Fridays: skip NY session',
+     'ORB: GBP/JPY 1% WR58% avgR+0.15 (long only, London open)  |  Trend SL=0.75×ATR  TP1=1.5×ATR  TP2=2.5×ATR  |  ORB SL=range low  TP1=1.5×range  TP2=2.5×range',
      {bg:'#040810', fg:'#1a2a3a', sz:8, h:22});
 
   SpreadsheetApp.flush();
