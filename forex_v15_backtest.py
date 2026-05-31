@@ -107,8 +107,8 @@ CHAL_CAUTIOUS_AT =   9.5
 CHAL_STOP_AT     =  -9.5
 
 # ── PAIR UNIVERSE ─────────────────────────────────────────────────────────────
-ACTIVE_PAIRS = ['CAD/CHF', 'AUD/JPY', 'AUD/CHF', 'AUD/NZD', 'AUD/USD',
-                'CAD/JPY', 'CHF/JPY', 'EUR/AUD', 'EUR/CAD']
+ACTIVE_PAIRS = ['CAD/CHF', 'AUD/JPY', 'CAD/JPY',
+                'EUR/CAD', 'AUD/NZD', 'CHF/JPY']
 
 PAIRS_MACRO = ['AUD/JPY', 'AUD/CHF', 'AUD/NZD', 'AUD/USD',
                'CAD/CHF', 'CAD/JPY', 'CHF/JPY', 'EUR/AUD', 'EUR/CAD']
