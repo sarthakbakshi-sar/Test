@@ -366,9 +366,16 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   cell(sheet,r,4, vixNow?vixNow.toFixed(1):'—',        {bg:'#0d0d20',fg:vixFg,   sz:16,bold:true});
   cell(sheet,r,5, drLabel,                              {bg:'#0d0d20',fg:drFg,    sz:10,bold:true}); r++;
   // VWAP subrow
-  var vwapInfo = tech&&tech.vwap ? 'Session VWAP $'+fix(tech.vwap)+'  ±1σ $'+fix(tech.vwapStd)
-    +(tech.vwapBars>=4?'  ('+tech.vwapBars+' bars)':'  (building — need 4+)') : '';
-  mrow(sheet,r,5,vwapInfo,{bg:'#080818',fg:'#334455',sz:9,h:18}); r++; r++;
+  var vwapInfo, vwapFg;
+  if (tech && tech.vwap > 0) {
+    vwapInfo = 'Session VWAP $'+fix(tech.vwap)+'  ±1σ $'+fix(tech.vwapStd)
+      +(tech.vwapBars>=4?'  ('+tech.vwapBars+' bars)':'  ('+tech.vwapBars+' bars — need 4 to activate)');
+    vwapFg = '#00bcd4';
+  } else {
+    vwapInfo = 'VWAP: session opens 17:30 Dubai (13:30 UTC) — builds once session bars arrive';
+    vwapFg = '#607d8b';
+  }
+  mrow(sheet,r,5,vwapInfo,{bg:'#080818',fg:vwapFg,sz:9,h:18}); r++; r++;
 
   // ── ACTION BLOCK ──────────────────────────────────────────────────────────
   var inEntry  = sessState==='ENTRY';
@@ -492,12 +499,14 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   // ── KEY LEVELS ────────────────────────────────────────────────────────────
   if (tech) {
     mrow(sheet,r,5,'KEY LEVELS',{bg:'#1a1a2e',fg:'#6060a0',sz:9,bold:true,h:20}); r++;
-    [['Session VWAP',              '$'+fix(tech.vwap),    'Mean-reversion anchor — entry zone built around this'],
+    [['Session VWAP',
+      tech.vwap>0?'$'+fix(tech.vwap):'— (pre-session)',
+      tech.vwap>0?'Mean-reversion anchor — '+tech.vwapBars+' bars since 13:30 UTC':'Session opens 13:30 UTC (17:30 Dubai) — VWAP builds from open'],
      [dir===1?'LONG zone (−1σ)':'SHORT zone (+1σ)',
-      dir===1?'$'+fix(tech.vwap-tech.vwapStd):'$'+fix(tech.vwap+tech.vwapStd),
+      tech.vwap>0?(dir===1?'$'+fix(tech.vwap-tech.vwapStd):'$'+fix(tech.vwap+tech.vwapStd)):'—',
       dir===1?'Lower band — buy pullbacks here':'Upper band — sell pullbacks here'],
      [dir===1?'LONG zone (+0.3σ)':'SHORT zone (−0.3σ)',
-      dir===1?'$'+fix(tech.vwap+0.3*tech.vwapStd):'$'+fix(tech.vwap-0.3*tech.vwapStd),
+      tech.vwap>0?(dir===1?'$'+fix(tech.vwap+0.3*tech.vwapStd):'$'+fix(tech.vwap-0.3*tech.vwapStd)):'—',
       'Far edge of entry zone'],
      ['4H EMA50','$'+fix(tech.h4ema50),'Short gate — shorts blocked above this level'],
      ['15m EMA9', '$'+fix(tech.ema9),  'Must be aligned with bias direction'],
