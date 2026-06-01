@@ -66,6 +66,7 @@ function updateDashboard() {
 
   var macro     = getMacroScore();
   var bars15m   = get15mBars(80);
+  Utilities.sleep(2000);
   var bars1h    = get1hBars(260);
   var sessState = getSessionState(nowH);
 
@@ -137,7 +138,9 @@ function getMacroScore() {
     { name:'GDX vs Gold',      val:s_gdx,   note:'Miners '+(s_gdx>0?'leading ↑ (bullish signal)':'lagging ↓ (weak signal)') }
   ];
 
-  cache.put('gold_proven_' + today, JSON.stringify(result), 21600);
+  // Short TTL when VIX is null so a failed fetch retries on next cycle instead of poisoning cache
+  var cacheTtl = result.vix !== null ? 21600 : 300;
+  cache.put('gold_proven_' + today, JSON.stringify(result), cacheTtl);
   return result;
 }
 
@@ -216,7 +219,10 @@ function sessionVwap(bars15m) {
   var now  = new Date();
   var ymd  = Utilities.formatDate(now, 'UTC', 'yyyy-MM-dd');
   var sOpen = new Date(ymd + 'T13:30:00Z');
-  var sess = bars15m.filter(function(b){ return new Date(b.dt.replace(' ','T')+'Z') >= sOpen; });
+  var todayPrefix = ymd + ' ';
+  var sess = bars15m.filter(function(b){
+    return new Date(b.dt.replace(' ','T')+'Z') >= sOpen && b.dt.indexOf(todayPrefix) === 0;
+  });
   if (sess.length < 2) return { vwap:0, std:1, n:0 };
   var tp  = sess.map(function(b){ return (b.h+b.l+b.c)/3; });
   var avg = tp.reduce(function(a,v){ return a+v; },0) / tp.length;
@@ -345,7 +351,7 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   var sMap = {BEFORE:'⏳ Pre-session',CHOP:'⚠ No entries (chop)',ENTRY:'✅ ENTRY OPEN',LATE:'🕐 Entry closed',CLOSED:'🔒 Closed'};
   var sFg  = {BEFORE:'#607d8b',CHOP:'#ff9800',ENTRY:'#00e676',LATE:'#ff9800',CLOSED:'#607d8b'};
 
-  ['GOLD PRICE','DIRECTION','SESSION','VIX','DAILY ATR'].forEach(function(h,i){
+  ['GOLD PRICE','DIRECTION','SESSION','VIX','DAILY RANGE'].forEach(function(h,i){
     cell(sheet,r,i+1,h,{bg:'#1c1c3a',fg:'#8888aa',sz:9,bold:true,h:20});
   });
   r++;
@@ -460,12 +466,16 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   mrow(sheet,r,5,'REGIME CONTEXT  (day-level filters)',
        {bg:'#1a2a1a',fg:'#50a050',sz:9,bold:true,h:20}); r++;
   var drOk = !tech||tech.drFlag==='OK'||!tech.drFlag;
+  var atrNow = tech && tech.atr ? tech.atr : null;
   var regimeRows = [
     ['VIX', vixNow?vixNow.toFixed(1):'—',
      !vixNow?'No data':vixNow<20?'Low vol — ideal conditions':vixNow<25?'Sweet spot (20–25)':vixNow<30?'Elevated — reduce size 20%':'SKIP TODAY — crash regime',
      !vixNow?null:vixNow<30],
+    ['ATR (15m)', atrNow?'$'+fix(atrNow):'—',
+     atrNow?'SL='+fix(SL_MULT*atrNow)+'  TP1='+fix(TP1_MULT*atrNow)+'  TP2='+fix(TP2_MULT*atrNow)+'  Risk $'+Math.round(ACCOUNT*RISK_PCT):'No 15m data',
+     atrNow!=null],
     ['Daily range', tech&&tech.dailyRange?'$'+fix(tech.dailyRange):'—',
-     !drOk?'Outside optimal ATR range — consider skipping (backtest: Sharpe 3.47 when ATR normal)':'Normal vol range — good conditions',
+     !drOk?'Outside optimal range — consider skipping (backtest: Sharpe 3.47 when ATR normal)':'Normal vol range — good conditions',
      drOk]
   ];
   regimeRows.forEach(function(row) {
