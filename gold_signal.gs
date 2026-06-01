@@ -22,7 +22,6 @@
  */
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-var TWELVE_KEY   = "06f050cd7d9940a895f9461e7f0ff7e3";
 var ACCOUNT      = 10000;       // ← change to your actual account size
 var RISK_PCT     = 0.03;        // 3% risk per trade
 var SL_MULT      = 0.75;
@@ -60,7 +59,7 @@ function setupTrigger() {
 function updateDashboard() {
   var now  = new Date();
   var nowH = now.getUTCHours() + now.getUTCMinutes() / 60;
-  // Only run during session window + 2h buffer (11:00–23:00 UTC). Saves ~half the daily API quota.
+  // Only run during session window + 2h buffer (11:00–23:00 UTC).
   if (nowH < 11.0 || nowH > 23.0) return;
 
   var ss   = SpreadsheetApp.getActiveSpreadsheet();
@@ -145,34 +144,37 @@ function getMacroScore() {
   return result;
 }
 
-// ── BAR FETCH ─────────────────────────────────────────────────────────────────
-function tdFetch(interval, outputsize) {
+// ── BAR FETCH (Yahoo Finance — free, no API key, no daily limit) ──────────────
+function yfBars(interval, range, n) {
   var sc  = CacheService.getScriptCache();
-  var key = 'td_gold_bars_' + interval;
-  // 1h bars change once per hour — cache 60 min. 15m bars cache 10 min (every other refresh).
-  var ttl = (interval === '1h') ? 3600 : 600;
+  var key = 'yf_gold_bars_' + interval;
+  var ttl = (interval === '1h') ? 3600 : 600; // 1h: cache 60 min; 15m: cache 10 min
   try { var hit = sc.get(key); if (hit) return JSON.parse(hit); } catch(e) {}
 
   try {
-    Utilities.sleep(1500); // rate-limit guard — only reached on cache miss
-    var url = 'https://api.twelvedata.com/time_series?symbol=XAU/USD' +
-              '&interval=' + interval + '&outputsize=' + outputsize +
-              '&apikey=' + TWELVE_KEY + '&timezone=UTC';
-    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true});
+    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD%3DX' +
+              '?interval=' + interval + '&range=' + range;
+    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent':'Mozilla/5.0'}});
     var j = JSON.parse(r.getContentText());
-    if (!j.values || j.status === 'error') {
-      try { sc.put('td_gold_err', j.message||j.code||'no values', 300); } catch(ce){}
-      return [];
+    var res = j.chart.result[0];
+    var ts  = res.timestamp;
+    var q   = res.indicators.quote[0];
+    var bars = [];
+    for (var i = 0; i < ts.length; i++) {
+      if (!q.open[i] || !q.close[i]) continue;
+      var d   = new Date(ts[i] * 1000);
+      var pad = function(x){ return x < 10 ? '0'+x : ''+x; };
+      var dt  = d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate())+
+                ' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());
+      bars.push({dt:dt, o:q.open[i], h:q.high[i], l:q.low[i], c:q.close[i], v:q.volume[i]||0});
     }
-    var bars = j.values.map(function(v) {
-      return { dt:v.datetime, o:+v.open, h:+v.high, l:+v.low, c:+v.close, v:+v.volume||0 };
-    }).reverse();
-    try { sc.put(key, JSON.stringify(bars), ttl); } catch(ce){}
-    return bars;
+    var out = bars.slice(-n);
+    try { sc.put(key, JSON.stringify(out), ttl); } catch(ce){}
+    return out;
   } catch(e) { return []; }
 }
-function get15mBars(n) { return tdFetch('15min', n); }
-function get1hBars(n)  { return tdFetch('1h',    n); }
+function get15mBars(n) { return yfBars('15m', '5d',  n); }
+function get1hBars(n)  { return yfBars('1h',  '60d', n); }
 
 // ── TECHNICALS ────────────────────────────────────────────────────────────────
 function computeTechnicals(bars15m, bars1h) {
@@ -255,11 +257,10 @@ function getSessionState(nowH) {
 // ── SETUP LOGIC ───────────────────────────────────────────────────────────────
 function computeSetup(macro, tech, sessState) {
   if (!tech || macro.error) {
-    var tdErr = ''; try { tdErr = CacheService.getScriptCache().get('td_gold_err')||''; } catch(e){}
     return {
       action: 'WAIT',
       dir:    macro.dir === 1 ? 'LONG' : 'SHORT',
-      reason: macro.error || (tdErr ? 'Twelve Data API: '+tdErr : '15m bars unavailable — quota or rate limit')
+      reason: macro.error || 'Bar data unavailable — Yahoo Finance may be temporarily down'
     };
   }
 
@@ -474,11 +475,11 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
     }
   } else {
     // No tech data — show diagnostic
-    mrow(sheet,r,5,'⚠  '+(setup.reason||'15m bar data unavailable'),
+    mrow(sheet,r,5,'⚠  '+(setup.reason||'Bar data unavailable'),
          {bg:'#1a0a0a',fg:'#ff9800',sz:10,h:28}); r++;
     mrow(sheet,r,5,
-         'Possible causes: Twelve Data API quota exceeded (free = 800 calls/day) · rate limit · key invalid\n' +
-         'Extensions → Apps Script → Execution log to see the raw error.',
+         'Yahoo Finance bar fetch failed — usually temporary. Will retry on next 5-min refresh.\n' +
+         'Extensions → Apps Script → Execution log for details.',
          {bg:'#110808',fg:'#664422',sz:9,h:36}); r++;
   }
   r++;
