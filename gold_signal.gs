@@ -58,16 +58,17 @@ function setupTrigger() {
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 function updateDashboard() {
+  var now  = new Date();
+  var nowH = now.getUTCHours() + now.getUTCMinutes() / 60;
+  // Only run during session window + 2h buffer (11:00–23:00 UTC). Saves ~half the daily API quota.
+  if (nowH < 11.0 || nowH > 23.0) return;
+
   var ss   = SpreadsheetApp.getActiveSpreadsheet();
   var dash = ss.getSheetByName('GOLD SIGNAL') || ss.insertSheet('GOLD SIGNAL');
 
-  var now  = new Date();
-  var nowH = now.getUTCHours() + now.getUTCMinutes() / 60;
-
-  var macro     = getMacroScore();
-  var bars15m   = get15mBars(80);
-  Utilities.sleep(2000);
-  var bars1h    = get1hBars(260);
+  var macro   = getMacroScore();
+  var bars15m = get15mBars(80);
+  var bars1h  = get1hBars(260);
   var sessState = getSessionState(nowH);
 
   var tech  = computeTechnicals(bars15m, bars1h);
@@ -146,19 +147,28 @@ function getMacroScore() {
 
 // ── BAR FETCH ─────────────────────────────────────────────────────────────────
 function tdFetch(interval, outputsize) {
+  var sc  = CacheService.getScriptCache();
+  var key = 'td_gold_bars_' + interval;
+  // 1h bars change once per hour — cache 60 min. 15m bars cache 10 min (every other refresh).
+  var ttl = (interval === '1h') ? 3600 : 600;
+  try { var hit = sc.get(key); if (hit) return JSON.parse(hit); } catch(e) {}
+
   try {
+    Utilities.sleep(1500); // rate-limit guard — only reached on cache miss
     var url = 'https://api.twelvedata.com/time_series?symbol=XAU/USD' +
               '&interval=' + interval + '&outputsize=' + outputsize +
               '&apikey=' + TWELVE_KEY + '&timezone=UTC';
     var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true});
     var j = JSON.parse(r.getContentText());
     if (!j.values || j.status === 'error') {
-      try { CacheService.getScriptCache().put('td_gold_err', j.message||j.code||'no values', 300); } catch(ce){}
+      try { sc.put('td_gold_err', j.message||j.code||'no values', 300); } catch(ce){}
       return [];
     }
-    return j.values.map(function(v) {
+    var bars = j.values.map(function(v) {
       return { dt:v.datetime, o:+v.open, h:+v.high, l:+v.low, c:+v.close, v:+v.volume||0 };
     }).reverse();
+    try { sc.put(key, JSON.stringify(bars), ttl); } catch(ce){}
+    return bars;
   } catch(e) { return []; }
 }
 function get15mBars(n) { return tdFetch('15min', n); }

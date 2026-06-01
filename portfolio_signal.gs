@@ -106,11 +106,15 @@ function setupTrigger() {
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 function updateDashboard() {
-  var ss   = SpreadsheetApp.getActiveSpreadsheet();
-  var dash = ss.getSheetByName('PORTFOLIO SIGNAL') || ss.insertSheet('PORTFOLIO SIGNAL');
-
   var now    = new Date();
   var nowUtc = now.getUTCHours() + now.getUTCMinutes() / 60;
+  // Only run during London (06:30–11:30 UTC) and NY (13:00–18:00 UTC) windows + buffers.
+  var inLondon = nowUtc >= 6.5  && nowUtc <= 11.5;
+  var inNY     = nowUtc >= 13.0 && nowUtc <= 18.0;
+  if (!inLondon && !inNY) return;
+
+  var ss   = SpreadsheetApp.getActiveSpreadsheet();
+  var dash = ss.getSheetByName('PORTFOLIO SIGNAL') || ss.insertSheet('PORTFOLIO SIGNAL');
 
   // User-editable equity inputs
   var curEq      = dash.getRange('G2').getValue() || ACCOUNT;
@@ -155,6 +159,12 @@ function tdSymbol(p) {
 
 // ── FETCH BARS (Twelve Data) ──────────────────────────────────────────────────
 function fetchBars(symbol, interval, n) {
+  var sc  = CacheService.getScriptCache();
+  var key = 'td_port_bars_' + symbol.replace('/','') + '_' + interval;
+  // 1h bars change once per hour — cache 60 min. 15m bars cache 10 min (every other refresh).
+  var ttl = (interval === '1h') ? 3600 : 600;
+  try { var hit = sc.get(key); if (hit) return JSON.parse(hit); } catch(e) {}
+
   try {
     var url = 'https://api.twelvedata.com/time_series?symbol=' +
               encodeURIComponent(symbol) + '&interval=' + interval +
@@ -162,9 +172,11 @@ function fetchBars(symbol, interval, n) {
     var r = UrlFetchApp.fetch(url, {muteHttpExceptions: true});
     var j = JSON.parse(r.getContentText());
     if (!j.values || j.status === 'error') return [];
-    return j.values.map(function(v) {
+    var bars = j.values.map(function(v) {
       return { dt: v.datetime, o: +v.open, h: +v.high, l: +v.low, c: +v.close, v: +v.volume || 0 };
     }).reverse();
+    try { sc.put(key, JSON.stringify(bars), ttl); } catch(ce){}
+    return bars;
   } catch(e) { return []; }
 }
 
