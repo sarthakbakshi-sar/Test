@@ -144,7 +144,7 @@ function getMacroScore() {
   return result;
 }
 
-// ── BAR FETCH (Yahoo Finance — free, no API key, no daily limit) ──────────────
+// ── BAR FETCH (Yahoo Finance — GC=F gold futures, free, no API key) ──────────
 function yfBars(interval, range, n) {
   var sc  = CacheService.getScriptCache();
   var key = 'yf_gold_bars_' + interval;
@@ -152,10 +152,16 @@ function yfBars(interval, range, n) {
   try { var hit = sc.get(key); if (hit) return JSON.parse(hit); } catch(e) {}
 
   try {
-    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD%3DX' +
+    // GC=F (gold futures) has intraday OHLC — XAUUSD=X (spot) does not
+    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF' +
               '?interval=' + interval + '&range=' + range;
-    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent':'Mozilla/5.0'}});
-    var j = JSON.parse(r.getContentText());
+    var r    = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent':'Mozilla/5.0'}});
+    var body = r.getContentText();
+    var j    = JSON.parse(body);
+    if (!j.chart || !j.chart.result || !j.chart.result[0]) {
+      Logger.log('yfBars [' + interval + '] no result — ' + body.substring(0, 400));
+      return [];
+    }
     var res = j.chart.result[0];
     var ts  = res.timestamp;
     var q   = res.indicators.quote[0];
@@ -171,7 +177,10 @@ function yfBars(interval, range, n) {
     var out = bars.slice(-n);
     try { sc.put(key, JSON.stringify(out), ttl); } catch(ce){}
     return out;
-  } catch(e) { return []; }
+  } catch(e) {
+    Logger.log('yfBars [' + interval + '] exception: ' + e.toString());
+    return [];
+  }
 }
 function get15mBars(n) { return yfBars('15m', '5d',  n); }
 function get1hBars(n)  { return yfBars('1h',  '60d', n); }
