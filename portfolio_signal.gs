@@ -778,18 +778,14 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
                      '  ·  Scale: ' + (trade.scale*100).toFixed(0) + '×';
       } else if (macro.dir !== 0 && res.tech) {
         // Has macro signal but not in entry zone
-        var reason = '';
-        if (setup.checks && setup.checks.length) {
-          var failed = setup.checks.filter(function(c){ return !c.ok; });
-          reason = failed.length ? 'Blocked: ' + failed.map(function(c){ return c.label; }).join(', ') : 'All checks ok (waiting for signal)';
-        }
+        var failed = (setup.checks||[]).filter(function(c){ return !c.ok; });
+        var blockedStr = failed.length
+          ? 'Waiting on: ' + failed.map(function(c){ return c.label; }).join(' · ')
+          : 'All gates ok — waiting for price';
         rowBg = '#0c1a10'; rowFg = '#4a8a5a';
         actionText = '○  ' + label + '  — WATCH  (macro ' + (macro.dir===1?'▲LONG':'▼SHORT') +
                      '  score ' + (macro.score||0).toFixed(1) + ')';
-        var vwapStr = res.tech && res.tech.vwap
-          ? '  VWAP: ' + res.tech.vwap.toFixed(pl) + '  dist: ' + (res.tech.vwapDist||0).toFixed(2) + 'σ'
-          : '';
-        detailText = reason + vwapStr;
+        detailText = blockedStr;
       } else {
         rowBg = '#0a0e14'; rowFg = '#334455';
         actionText = '—  ' + label + '  — WAIT  (score: ' + (macro.score||0).toFixed(1) + ')';
@@ -801,6 +797,26 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
         .setBackground(rowBg).setFontColor(rowFg==='#00ff88'?'#aaddc0':rowFg==='#ff5252'?'#cc7777':'#607d8b')
         .setFontSize(9).setVerticalAlignment('middle').setHorizontalAlignment('left').setWrap(true);
       r++;
+
+      // VWAP zone row — shown for all pairs with a macro signal (WATCH or ACTIVE)
+      var showVwap = !skipped && macro.dir !== 0 && res.tech && res.tech.vwap && res.tech.vwapStd > 0.001;
+      if (showVwap) {
+        var vDir = macro.dir;
+        var vwapV = res.tech.vwap, stdV = res.tech.vwapStd, distV = res.tech.vwapDist || 99;
+        var zoneLo  = vDir===1 ? vwapV - stdV        : vwapV - 0.3*stdV;
+        var zoneHi  = vDir===1 ? vwapV + 0.3*stdV    : vwapV + stdV;
+        var inZone  = vDir===1 ? (distV>=-1.0 && distV<=0.3) : (distV>=-0.3 && distV<=1.0);
+        var vwapMsg = 'VWAP ' + res.tech.vwap.toFixed(pl) +
+                      '  ±1σ=' + stdV.toFixed(pl) +
+                      '  |  ' + (vDir===1?'LONG':'SHORT') + ' entry zone: ' +
+                      zoneLo.toFixed(pl) + ' – ' + zoneHi.toFixed(pl) +
+                      '  |  dist=' + distV.toFixed(2) + 'σ' +
+                      (inZone ? '  ◄ IN ZONE — check all gates' : '  ← wait for pullback to zone') +
+                      (res.tech.vwapBars < 4 ? '  (only ' + res.tech.vwapBars + ' bars — still building)' : '');
+        var vzBg = inZone ? '#0a2a0a' : '#0a1420';
+        var vzFg = inZone ? '#00e676' : '#00bcd4';
+        mr(sheet, r, 6, vwapMsg, {bg:vzBg, fg:vzFg, sz:10, bold:inZone, h:28}); r++;
+      }
 
       // Full MT5 instruction row for active trades
       if (trade) {
@@ -964,6 +980,35 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
       mr(sheet, r, 6, '🔼  LONG ONLY (carry trade) — NEVER SHORT this pair',
          {bg:'#100a20', fg:'#9575cd', sz:10, h:24}); r++;
     }
+
+    // VWAP zone (per-pair detail)
+    if (tech && tech.vwap && tech.vwapStd > 0.001 && macro.dir !== 0) {
+      var vd = macro.dir, vv = tech.vwap, vs = tech.vwapStd, vdist = tech.vwapDist || 99;
+      var vlo = vd===1 ? vv-vs       : vv-0.3*vs;
+      var vhi = vd===1 ? vv+0.3*vs   : vv+vs;
+      var vin = vd===1 ? (vdist>=-1.0&&vdist<=0.3) : (vdist>=-0.3&&vdist<=1.0);
+      var vpl = dp===0.01?3:5;
+      ['VWAP','±1σ','ENTRY ZONE LOW','ENTRY ZONE HIGH','DIST NOW','STATUS'].forEach(function(h,i){
+        cl(sheet,r,i+1,h,{bg:'#0a1828',fg:'#334455',sz:9,bold:true,h:20});
+      });
+      r++;
+      cl(sheet,r,1, vv.toFixed(vpl),      {bg:'#0a1a28',fg:'#e0e0e0',sz:12,bold:true,h:36});
+      cl(sheet,r,2, vs.toFixed(vpl),       {bg:'#0a1a28',fg:'#7090a0',sz:11});
+      cl(sheet,r,3, vlo.toFixed(vpl),      {bg:'#0a1a28',fg:vin?'#00e676':'#00bcd4',sz:11,bold:vin});
+      cl(sheet,r,4, vhi.toFixed(vpl),      {bg:'#0a1a28',fg:vin?'#00e676':'#00bcd4',sz:11,bold:vin});
+      cl(sheet,r,5, vdist.toFixed(2)+'σ',  {bg:'#0a1a28',fg:vin?'#00e676':'#607d8b',sz:11,bold:vin});
+      cl(sheet,r,6, vin?'IN ZONE ◄':'wait',{bg:vin?'#0a2a14':'#0a1a28',fg:vin?'#00ff88':'#445566',sz:10,bold:vin});
+      r++;
+      mr(sheet,r,6,
+         (vd===1?'LONG':'SHORT')+' entry zone: '+vlo.toFixed(vpl)+' – '+vhi.toFixed(vpl)+
+         '  (VWAP '+vv.toFixed(vpl)+' ± '+vs.toFixed(vpl)+')' +
+         (tech.vwapBars<4?'  — only '+tech.vwapBars+' bars, still building':'  — '+tech.vwapBars+' bars since session open'),
+         {bg:'#081420',fg:vin?'#00e676':'#00bcd4',sz:10,bold:false,h:26}); r++;
+    } else if (tech) {
+      mr(sheet,r,6,'VWAP: building — session not open yet or < 4 bars',
+         {bg:'#0a1428',fg:'#445566',sz:9,h:22}); r++;
+    }
+    r++;
 
     // Macro components
     mr(sheet, r, 6, 'MACRO COMPONENTS  (5 of 5, score ≥6=LONG  ≤−6=SHORT)',
