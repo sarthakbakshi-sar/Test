@@ -654,17 +654,24 @@ function calcFtmo(curEq, dayStartEq, monStartEq) {
 
 // ── SHEET WRITER ──────────────────────────────────────────────────────────────
 function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monStartEq, regime, chalScale) {
+  // Save equity inputs BEFORE clearing — sheet.clear() wipes them
+  var savedG2 = sheet.getRange('G2').getValue();
+  var savedG3 = sheet.getRange('G3').getValue();
+  var savedG4 = sheet.getRange('G4').getValue();
+
   sheet.clear();
   [220, 95, 95, 95, 95, 95, 140].forEach(function(w,i){ sheet.setColumnWidth(i+1,w); });
+  // Prevent auto-currency format on column G bleeding into price cells
+  sheet.getRange(1, 7, 300, 1).setNumberFormat('@');
 
   var dubaiStr = Utilities.formatDate(now, 'Asia/Dubai', 'HH:mm \'DXB (UTC+4)\'');
   var utcStr   = Utilities.formatDate(now, 'UTC', 'HH:mm \'UTC\'');
   var r = 1;
 
   // ═══ TITLE ════════════════════════════════════════════════════════════════
-  mr(sheet, r, 6, '  FTMO PORTFOLIO SIGNAL  V15  —  6 PAIRS  —  VWAP PULLBACK',
+  mr(sheet, r, 7, '  FTMO PORTFOLIO SIGNAL  V15  —  6 PAIRS  —  VWAP PULLBACK',
      {bg:'#0a1628', fg:'#00bcd4', sz:15, bold:true, h:44}); r++;
-  mr(sheet, r, 6, dubaiStr + '  ·  ' + utcStr + '  ·  Auto-refresh 5 min  ·  Update G2/G3/G4 each day',
+  mr(sheet, r, 6, dubaiStr + '  ·  ' + utcStr + '  ·  Auto-refresh 5 min  ·  Equity inputs: G2=now  G3=day-start  G4=month-start',
      {bg:'#060e1a', fg:'#334455', sz:10, h:24}); r++;
 
   // ═══ REGIME BAR ══════════════════════════════════════════════════════════
@@ -832,8 +839,8 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
 
   // ═══ SIGNAL SUMMARY TABLE ═════════════════════════════════════════════════
   r++;
-  mr(sheet, r, 6, 'SIGNAL SUMMARY', {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
-  ['PAIR','SIGNAL','SCORE','ENTRY','SL','TP1','TP2'].forEach(function(h,i){
+  mr(sheet, r, 7, 'SIGNAL SUMMARY', {bg:'#111e2e', fg:'#445577', sz:9, bold:true, h:22}); r++;
+  ['PAIR','SIGNAL','SCORE','ENTRY','SL','TP1/TP2','VWAP ZONE'].forEach(function(h,i){
     cl(sheet, r, i+1, h, {bg:'#0c1828', fg:'#334455', sz:9, bold:true, h:22});
   });
   r++;
@@ -843,7 +850,7 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
     'EURCAD':'EUR/CAD','AUDNZD':'AUD/NZD','CHFJPY':'CHF/JPY'
   };
   ['CADCHF','AUDJPY','CADJPY','EURCAD','AUDNZD','CHFJPY'].forEach(function(p) {
-    var res = results[p], macro = res.macro, trade = res.trade;
+    var res = results[p], macro = res.macro, trade = res.trade, tech = res.tech;
     var score = macro.score || 0;
     var dp = PIP_SIZE[p], pl = dp===0.01?3:5;
     var skipped = regime && regime.skipPairs && regime.skipPairs[p];
@@ -861,17 +868,29 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
     }
     var scoreFg = score>=6?'#00e676':score<=-6?'#ff5252':score!==0?'#ffc107':'#445566';
 
-    cl(sheet, r,1, pairLabels2[p], {bg:'#0a0e14', fg:'#c0ccd6', sz:10, bold:true, h:36});
+    // VWAP zone text for column 7
+    var vwapZoneText = '—', vwapZoneBg = '#0a0e14', vwapZoneFg = '#334455';
+    if (!skipped && tech && tech.vwap && tech.vwapStd > 0.001 && macro.dir !== 0) {
+      var vd = macro.dir, vv = tech.vwap, vs = tech.vwapStd, vdist = tech.vwapDist || 99;
+      var vlo = vd===1 ? vv-vs       : vv-0.3*vs;
+      var vhi = vd===1 ? vv+0.3*vs   : vv+vs;
+      var vin = vd===1 ? (vdist>=-1.0&&vdist<=0.3) : (vdist>=-0.3&&vdist<=1.0);
+      vwapZoneText  = vlo.toFixed(pl) + '\n– ' + vhi.toFixed(pl);
+      vwapZoneBg    = vin ? '#0a2a14' : '#0a1428';
+      vwapZoneFg    = vin ? '#00e676' : '#00bcd4';
+    }
+
+    cl(sheet, r,1, pairLabels2[p], {bg:'#0a0e14', fg:'#c0ccd6', sz:10, bold:true, h:44});
     cl(sheet, r,2, sigText, {bg:sigBg, fg:sigFg, sz:10, bold:true});
     cl(sheet, r,3, macro.gated?score.toFixed(1)+'\n[gated]':score!==0?score.toFixed(1):'—', {bg:'#0a0e14', fg:scoreFg, sz:11, bold:true});
     if (trade) {
       cl(sheet, r,4, trade.entry.toFixed(pl), {bg:'#0a0e14', fg:'#e0e0e0', sz:10, bold:true});
       cl(sheet, r,5, trade.sl.toFixed(pl)+'\n−'+trade.slPips+'p', {bg:'#0a0e14', fg:'#ff5252', sz:9});
-      cl(sheet, r,6, trade.tp1.toFixed(pl)+'\n+'+trade.tp1Pips+'p', {bg:'#0a0e14', fg:'#00e676', sz:9});
-      cl(sheet, r,7, trade.tp2.toFixed(pl)+'\n+'+trade.tp2Pips+'p', {bg:'#0a0e14', fg:'#00bcd4', sz:9});
+      cl(sheet, r,6, trade.tp1.toFixed(pl)+'\n+'+trade.tp1Pips+'p\n→ '+trade.tp2.toFixed(pl)+'\n+'+trade.tp2Pips+'p', {bg:'#0a0e14', fg:'#00e676', sz:9});
     } else {
-      [4,5,6,7].forEach(function(c){ cl(sheet, r,c, '—', {bg:'#0a0e14', fg:'#334455', sz:10}); });
+      [4,5,6].forEach(function(c){ cl(sheet, r,c, '—', {bg:'#0a0e14', fg:'#334455', sz:10}); });
     }
+    cl(sheet, r,7, vwapZoneText, {bg:vwapZoneBg, fg:vwapZoneFg, sz:9, bold:vwapZoneFg==='#00e676'});
     r++;
   });
 
@@ -880,19 +899,21 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
   mr(sheet, r, 6, 'FTMO CHALLENGE TRACKER', {bg:'#0a1628', fg:'#445577', sz:10, bold:true, h:22}); r++;
 
   // User-editable cell labels
-  sheet.getRange('G1').setValue('↓ EDIT G2/G3/G4').setFontColor('#334455').setFontSize(8).setBackground('#040810');
-  sheet.getRange('G2').setBackground('#0a1a2a').setFontColor('#e0e0e0').setFontSize(12)
-    .setFontWeight('bold').setHorizontalAlignment('center')
-    .setNote('Current MT5 equity — update whenever you open the sheet');
-  sheet.getRange('G3').setBackground('#0a1a0a').setFontColor('#e0e0e0').setFontSize(12)
-    .setFontWeight('bold').setHorizontalAlignment('center')
-    .setNote('Equity at start of today');
-  sheet.getRange('G4').setBackground('#1a1a0a').setFontColor('#e0e0e0').setFontSize(12)
-    .setFontWeight('bold').setHorizontalAlignment('center')
-    .setNote('Equity at start of this FTMO challenge month ($120,000 on day 1)');
-  if (!sheet.getRange('G2').getValue()) sheet.getRange('G2').setValue(ACCOUNT);
-  if (!sheet.getRange('G3').getValue()) sheet.getRange('G3').setValue(ACCOUNT);
-  if (!sheet.getRange('G4').getValue()) sheet.getRange('G4').setValue(ACCOUNT);
+  // Equity input cells — restore saved values (clear() wiped them above)
+  sheet.getRange('G1').setValue('EQUITY INPUTS ↓').setFontColor('#445577').setFontSize(8)
+    .setBackground('#060e1a').setHorizontalAlignment('center');
+  var g2 = savedG2 && savedG2 > 0 ? savedG2 : ACCOUNT;
+  var g3 = savedG3 && savedG3 > 0 ? savedG3 : ACCOUNT;
+  var g4 = savedG4 && savedG4 > 0 ? savedG4 : ACCOUNT;
+  sheet.getRange('G2').setValue(g2).setBackground('#0a1a2a').setFontColor('#FFD700')
+    .setFontSize(11).setFontWeight('bold').setHorizontalAlignment('center').setNumberFormat('#,##0')
+    .setNote('G2 = Current MT5 equity — update this whenever you open the sheet');
+  sheet.getRange('G3').setValue(g3).setBackground('#0a1a0a').setFontColor('#aaddaa')
+    .setFontSize(10).setFontWeight('bold').setHorizontalAlignment('center').setNumberFormat('#,##0')
+    .setNote('G3 = Equity at START of today (set once in the morning)');
+  sheet.getRange('G4').setValue(g4).setBackground('#1a1a0a').setFontColor('#aaaadd')
+    .setFontSize(10).setFontWeight('bold').setHorizontalAlignment('center').setNumberFormat('#,##0')
+    .setNote('G4 = Equity at START of this FTMO month — set once on day 1 ($120,000)');
 
   var ftmoRows = [
     ['Current equity',   '$'+Math.round(ftmo.curEq).toLocaleString(),
