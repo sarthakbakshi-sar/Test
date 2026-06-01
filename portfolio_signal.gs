@@ -125,10 +125,10 @@ function updateDashboard() {
   var results = {};
 
   pairs.forEach(function(p, idx) {
-    if (idx > 0) Utilities.sleep(9000);
+    if (idx > 0) Utilities.sleep(4000);
     var sym = tdSymbol(p);
     var bars15 = fetchBars(sym, '15min', 80);
-    Utilities.sleep(9000);
+    Utilities.sleep(4000);
     var bars1h = fetchBars(sym, '1h', 260);
 
     var macro = calcMacroForPair(p, macroData);
@@ -479,8 +479,10 @@ function calcSessionVwap(bars15, vwapStartH) {
   var hh   = pad(Math.floor(vwapStartH));
   var mm   = pad(Math.round((vwapStartH % 1) * 60));
   var open = new Date(ymd + 'T' + hh + ':' + mm + ':00Z');
+  var todayPrefix = ymd + ' ';
   var sess = bars15.filter(function(b) {
-    return new Date(b.dt.replace(' ','T') + 'Z') >= open;
+    var barDate = new Date(b.dt.replace(' ','T') + 'Z');
+    return barDate >= open && b.dt.indexOf(todayPrefix) === 0;
   });
   if (sess.length < 2) return { vwap:0, std:1e-5, n:0 };
   var tp = sess.map(function(b){ return (b.h+b.l+b.c)/3; });
@@ -669,7 +671,7 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
   var r = 1;
 
   // ═══ TITLE ════════════════════════════════════════════════════════════════
-  mr(sheet, r, 7, '  FTMO PORTFOLIO SIGNAL  V15  —  6 PAIRS  —  VWAP PULLBACK',
+  mr(sheet, r, 6, '  FTMO PORTFOLIO SIGNAL  V15  —  6 PAIRS  —  VWAP PULLBACK',
      {bg:'#0a1628', fg:'#00bcd4', sz:15, bold:true, h:44}); r++;
   mr(sheet, r, 6, dubaiStr + '  ·  ' + utcStr + '  ·  Auto-refresh 5 min  ·  Equity inputs: G2=now  G3=day-start  G4=month-start',
      {bg:'#060e1a', fg:'#334455', sz:10, h:24}); r++;
@@ -806,6 +808,7 @@ function writeSheet(sheet, now, nowUtcH, results, ftmo, curEq, dayStartEq, monSt
       r++;
 
       // VWAP zone row — shown for all pairs with a macro signal (WATCH or ACTIVE)
+      var skipped = regime && regime.skipPairs && regime.skipPairs[p];
       var showVwap = !skipped && macro.dir !== 0 && res.tech && res.tech.vwap && res.tech.vwapStd > 0.001;
       if (showVwap) {
         var vDir = macro.dir;
