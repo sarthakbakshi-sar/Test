@@ -95,9 +95,9 @@ function getMacroScore() {
 
   var gold = yf('GC=F',     '3mo');
   var dxy  = yf('DX-Y.NYB', '3mo');
-  var tnx  = yf('%5ETNX',   '3mo');
+  var tnx  = yf('^TNX',      '3mo');
   var gdx  = yf('GDX',      '3mo');
-  var vix  = yf('%5EVIX',   '5d');
+  var vix  = yf('^VIX',     '5d');
 
   var result = { score:0, dir:1, strength:'', components:[], error:null, goldPriceD:null, vix:null };
   if (!gold || gold.length < 55) { result.error = 'Macro data unavailable'; return result; }
@@ -152,7 +152,10 @@ function tdFetch(interval, outputsize) {
               '&apikey=' + TWELVE_KEY + '&timezone=UTC';
     var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true});
     var j = JSON.parse(r.getContentText());
-    if (!j.values || j.status === 'error') return [];
+    if (!j.values || j.status === 'error') {
+      try { CacheService.getScriptCache().put('td_gold_err', j.message||j.code||'no values', 300); } catch(ce){}
+      return [];
+    }
     return j.values.map(function(v) {
       return { dt:v.datetime, o:+v.open, h:+v.high, l:+v.low, c:+v.close, v:+v.volume||0 };
     }).reverse();
@@ -241,7 +244,14 @@ function getSessionState(nowH) {
 
 // ── SETUP LOGIC ───────────────────────────────────────────────────────────────
 function computeSetup(macro, tech, sessState) {
-  if (!tech || macro.error) return { action:'WAIT', reason: macro.error || 'No data' };
+  if (!tech || macro.error) {
+    var tdErr = ''; try { tdErr = CacheService.getScriptCache().get('td_gold_err')||''; } catch(e){}
+    return {
+      action: 'WAIT',
+      dir:    macro.dir === 1 ? 'LONG' : 'SHORT',
+      reason: macro.error || (tdErr ? 'Twelve Data API: '+tdErr : '15m bars unavailable — quota or rate limit')
+    };
+  }
 
   var dir  = macro.dir;
   var price = tech.price;
@@ -386,8 +396,10 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
     : setup.action==='SKIP'
       ? '🚫  SKIP  —  ' + setup.reason
       : inEntry
-        ? '⏱  IN SESSION  —  Watching for setup  ·  Bias: '+(setup.dir||'—')+'  ·  Waiting on: '+
-          (setup.checks?setup.checks.filter(function(c){return !c.ok;}).length+' gate(s)':'—')
+        ? setup.checks
+          ? '⏱  IN SESSION  —  Watching for setup  ·  Bias: '+(setup.dir||'—')+'  ·  Waiting on: '+
+            setup.checks.filter(function(c){return !c.ok;}).length+' gate(s)'
+          : '⚠  IN SESSION  —  '+(setup.reason||'Data unavailable')+'  ·  Bias: '+(setup.dir||'—')
         : '⏳  NEXT SESSION: 18:00 Dubai (14:00 UTC)';
   mrow(sheet,r,5,actionTxt,{bg:actionBg,fg:actionFg,sz:12,bold:true,h:38}); r++;
 
@@ -450,6 +462,14 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
            '  (VWAP=$'+fix(tech.vwap)+'  ±1σ=$'+fix(tech.vwapStd)+')',
            {bg:'#0a1628',fg:'#00bcd4',sz:10,bold:true,h:28}); r++;
     }
+  } else {
+    // No tech data — show diagnostic
+    mrow(sheet,r,5,'⚠  '+(setup.reason||'15m bar data unavailable'),
+         {bg:'#1a0a0a',fg:'#ff9800',sz:10,h:28}); r++;
+    mrow(sheet,r,5,
+         'Possible causes: Twelve Data API quota exceeded (free = 800 calls/day) · rate limit · key invalid\n' +
+         'Extensions → Apps Script → Execution log to see the raw error.',
+         {bg:'#110808',fg:'#664422',sz:9,h:36}); r++;
   }
   r++;
 
