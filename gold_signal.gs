@@ -59,8 +59,6 @@ function setupTrigger() {
 function updateDashboard() {
   var now  = new Date();
   var nowH = now.getUTCHours() + now.getUTCMinutes() / 60;
-  // Only run during session window + 2h buffer (11:00–23:00 UTC).
-  if (nowH < 11.0 || nowH > 23.0) return;
 
   var ss   = SpreadsheetApp.getActiveSpreadsheet();
   var dash = ss.getSheetByName('GOLD SIGNAL') || ss.insertSheet('GOLD SIGNAL');
@@ -148,39 +146,47 @@ function getMacroScore() {
 function yfBars(interval, range, n) {
   var sc  = CacheService.getScriptCache();
   var key = 'yf_gold_bars_' + interval;
-  var ttl = (interval === '1h') ? 3600 : 600; // 1h: cache 60 min; 15m: cache 10 min
+  var ttl = (interval === '1h') ? 3600 : 600;
   try { var hit = sc.get(key); if (hit) return JSON.parse(hit); } catch(e) {}
 
-  try {
-    // GC=F (gold futures) has intraday OHLC — XAUUSD=X (spot) does not
-    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF' +
-              '?interval=' + interval + '&range=' + range;
-    var r    = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent':'Mozilla/5.0'}});
-    var body = r.getContentText();
-    var j    = JSON.parse(body);
-    if (!j.chart || !j.chart.result || !j.chart.result[0]) {
-      Logger.log('yfBars [' + interval + '] no result — ' + body.substring(0, 400));
-      return [];
+  var hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+  var opts  = { muteHttpExceptions: true,
+                headers: { 'User-Agent': 'Mozilla/5.0',
+                           'Accept': 'application/json' } };
+
+  for (var hi = 0; hi < hosts.length; hi++) {
+    try {
+      var url  = 'https://' + hosts[hi] + '/v8/finance/chart/GC%3DF' +
+                 '?interval=' + interval + '&range=' + range;
+      var r    = UrlFetchApp.fetch(url, opts);
+      var body = r.getContentText();
+      var j    = JSON.parse(body);
+      if (!j.chart || !j.chart.result || !j.chart.result[0]) {
+        Logger.log('yfBars [' + interval + '] ' + hosts[hi] + ' no result');
+        continue;
+      }
+      var res  = j.chart.result[0];
+      var ts   = res.timestamp;
+      var q    = res.indicators.quote[0];
+      var bars = [];
+      for (var i = 0; i < ts.length; i++) {
+        if (!q.open[i] || !q.close[i]) continue;
+        var d   = new Date(ts[i] * 1000);
+        var pad = function(x){ return x < 10 ? '0'+x : ''+x; };
+        var dt  = d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate())+
+                  ' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());
+        bars.push({dt:dt, o:q.open[i], h:q.high[i], l:q.low[i], c:q.close[i], v:q.volume[i]||0});
+      }
+      if (bars.length === 0) continue;   // try next host
+      var out = bars.slice(-n);
+      try { sc.put(key, JSON.stringify(out), ttl); } catch(ce){}
+      return out;
+    } catch(e) {
+      Logger.log('yfBars [' + interval + '] ' + hosts[hi] + ' error: ' + e.toString());
     }
-    var res = j.chart.result[0];
-    var ts  = res.timestamp;
-    var q   = res.indicators.quote[0];
-    var bars = [];
-    for (var i = 0; i < ts.length; i++) {
-      if (!q.open[i] || !q.close[i]) continue;
-      var d   = new Date(ts[i] * 1000);
-      var pad = function(x){ return x < 10 ? '0'+x : ''+x; };
-      var dt  = d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate())+
-                ' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());
-      bars.push({dt:dt, o:q.open[i], h:q.high[i], l:q.low[i], c:q.close[i], v:q.volume[i]||0});
-    }
-    var out = bars.slice(-n);
-    try { sc.put(key, JSON.stringify(out), ttl); } catch(ce){}
-    return out;
-  } catch(e) {
-    Logger.log('yfBars [' + interval + '] exception: ' + e.toString());
-    return [];
   }
+  // Both hosts failed — return [] without caching so next 5-min cycle retries
+  return [];
 }
 function get15mBars(n) { return yfBars('15m', '5d',  n); }
 function get1hBars(n)  { return yfBars('1h',  '60d', n); }
@@ -395,17 +401,31 @@ function writeSheet(sheet, now, nowH, macro, tech, sessState, setup) {
   cell(sheet,r,3, sMap[sessState]||sessState,           {bg:'#0d0d20',fg:sFg[sessState]||'#808080',sz:10,bold:true});
   cell(sheet,r,4, vixNow?vixNow.toFixed(1):'—',        {bg:'#0d0d20',fg:vixFg,   sz:16,bold:true});
   cell(sheet,r,5, drLabel,                              {bg:'#0d0d20',fg:drFg,    sz:10,bold:true}); r++;
-  // VWAP subrow
-  var vwapInfo, vwapFg;
-  if (tech && tech.vwap > 0) {
-    vwapInfo = 'Session VWAP $'+fix(tech.vwap)+'  ±1σ $'+fix(tech.vwapStd)
-      +(tech.vwapBars>=4?'  ('+tech.vwapBars+' bars)':'  ('+tech.vwapBars+' bars — need 4 to activate)');
-    vwapFg = '#00bcd4';
+  // ── VWAP PANEL ──────────────────────────────────────────────────────────────
+  var hasVwap = tech && tech.vwap > 0 && tech.vwapStd > 0;
+  ['VWAP', '−1σ  (LONG zone)', '+1σ  (SHORT zone)', 'PRICE vs VWAP', 'BARS'].forEach(function(h,i){
+    cell(sheet,r,i+1,h,{bg:'#0a1a28',fg:'#336688',sz:9,bold:true,h:18});
+  });
+  r++;
+  if (hasVwap) {
+    var vwDist  = tech.vwapDist;
+    var vwDistS = (vwDist >= 0 ? '+' : '') + Math.round(vwDist * 100) / 100 + 'σ';
+    var inZone  = dir === 1 ? (vwDist >= -1.0 && vwDist <= 0.3) : (vwDist >= -0.3 && vwDist <= 1.0);
+    var posFg   = inZone ? '#00e676' : '#ff9800';
+    var posLbl  = vwDistS + (inZone ? '  ✓ IN ZONE' : '  ✗ OUT OF ZONE');
+    cell(sheet,r,1,'$'+fix(tech.vwap),                           {bg:'#061420',fg:'#00bcd4',sz:14,bold:true,h:34});
+    cell(sheet,r,2,'$'+fix(tech.vwap - tech.vwapStd),            {bg:'#061420',fg:'#00e676',sz:13,bold:true});
+    cell(sheet,r,3,'$'+fix(tech.vwap + tech.vwapStd),            {bg:'#061420',fg:'#ff5252',sz:13,bold:true});
+    cell(sheet,r,4,posLbl,                                        {bg:'#061420',fg:posFg,   sz:11,bold:true});
+    cell(sheet,r,5,tech.vwapBars+(tech.vwapBars<4?' ⚠':''),      {bg:'#061420',fg:'#607d8b',sz:11});
   } else {
-    vwapInfo = 'VWAP: session opens 17:30 Dubai (13:30 UTC) — builds once session bars arrive';
-    vwapFg = '#607d8b';
+    var vMsg = (nowH >= SESS_OPEN && nowH <= SESS_CLOSE)
+      ? 'Session active — bar fetch failed (retrying)'
+      : 'Pre-session — VWAP builds from 13:30 UTC (17:30 Dubai)';
+    var vFg2 = (nowH >= SESS_OPEN && nowH <= SESS_CLOSE) ? '#ff9800' : '#607d8b';
+    mrow(sheet,r,5,vMsg,{bg:'#061420',fg:vFg2,sz:9,h:34});
   }
-  mrow(sheet,r,5,vwapInfo,{bg:'#080818',fg:vwapFg,sz:9,h:18}); r++; r++;
+  r++; r++;
 
   // ── ACTION BLOCK ──────────────────────────────────────────────────────────
   var inEntry  = sessState==='ENTRY';
