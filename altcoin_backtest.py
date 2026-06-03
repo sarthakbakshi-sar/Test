@@ -35,7 +35,7 @@ CFG = {
     'atr_period': 14,
     'sl_atr':     1.5,
     'tp1_atr':    3.0,
-    'signal_min': 5,    # max 8 in backtest
+    'signal_min': 7,    # sweet spot from initial run
     'capital':    10000,
     'risk_pct':   0.02,
 }
@@ -50,47 +50,54 @@ RST   = '\033[0m'
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 
-def fetch_bars(symbol, interval, limit=900):
-    """Fetch OHLCV from OKX — paginates to get up to `limit` closed bars.
-    OKX returns newest-first; we reverse to chronological order.
+def fetch_bars(symbol, interval, limit=5760):
+    """Fetch OHLCV from OKX history-candles endpoint — up to 269 days available.
+    Paginates backwards in time to get `limit` closed bars.
     interval: '15m' or '4H'
     """
+    import time as _time
     all_bars = []
-    after = None   # pagination cursor (timestamp ms, fetch bars BEFORE this)
-    per_req = 300
+    after    = None
+    per_req  = 300
+    endpoint = f"{OKX}/history-candles"
 
     while len(all_bars) < limit:
-        params = {'instId': symbol, 'bar': interval, 'limit': str(min(per_req, limit - len(all_bars)))}
+        fetch_n = min(per_req, limit - len(all_bars))
+        params  = {'instId': symbol, 'bar': interval, 'limit': str(fetch_n)}
         if after:
             params['after'] = str(after)
         try:
-            r = requests.get(f"{OKX}/candles", params=params, timeout=15)
+            r = requests.get(endpoint, params=params, timeout=15)
             d = r.json()
             if d.get('code') != '0' or not d.get('data'):
                 break
-            rows = d['data']
-            # Filter to confirmed (closed) candles only: confirm field = '1'
-            closed = [row for row in rows if row[8] == '1']
+            rows   = d['data']
+            closed = [row for row in rows if len(row) > 8 and row[8] == '1']
+            if not closed:
+                # history-candles may not have confirm field — accept all
+                closed = rows
             if not closed:
                 break
             all_bars.extend(closed)
-            after = closed[-1][0]   # oldest ts in this batch
-            if len(rows) < per_req:
-                break               # no more history
-            import time; time.sleep(0.08)
-        except Exception as e:
+            after = closed[-1][0]
+            if len(rows) < fetch_n:
+                break
+            _time.sleep(0.08)
+        except Exception:
             break
 
     if len(all_bars) < 10:
         return None
 
-    # OKX format: [ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]
-    df = pd.DataFrame(all_bars, columns=['ts','open','high','low','close','vol','volccy','volquote','confirm'])
+    cols = ['ts','open','high','low','close','vol','volccy','volquote']
+    if len(all_bars[0]) > 8:
+        cols.append('confirm')
+    df = pd.DataFrame(all_bars, columns=cols[:len(all_bars[0])])
     df['ts'] = pd.to_datetime(df['ts'].astype('int64'), unit='ms', utc=True)
     for col in ['open','high','low','close']:
         df[col] = pd.to_numeric(df[col])
-    df['volume'] = pd.to_numeric(df['volccy'])   # use quote volume for better normalization
-    df = df.sort_values('ts').reset_index(drop=True)
+    df['volume'] = pd.to_numeric(df['volccy'])
+    df = df.sort_values('ts').drop_duplicates('ts').reset_index(drop=True)
     return df
 
 # ── Technicals ────────────────────────────────────────────────────────────────
@@ -349,11 +356,11 @@ def val_color(v, good=0):
 
 def main():
     print(f"\n{BOLD}{CYAN}{'═'*70}{RST}")
-    print(f"{BOLD}{CYAN}  ALTCOIN 15m SIGNAL BACKTEST  —  {len(TOKENS)} tokens  ·  ~10 days  ·  Binance{RST}")
+    print(f"{BOLD}{CYAN}  ALTCOIN 15m SIGNAL BACKTEST  —  {len(TOKENS)} tokens  ·  ~90 days  ·  OKX  ·  score≥7{RST}")
     print(f"{BOLD}{CYAN}{'═'*70}{RST}\n")
     print(f"{DIM}  Fetching BTC reference data...{RST}", end='', flush=True)
 
-    btc15 = fetch_bars('BTC-USDT', '15m', 900)
+    btc15 = fetch_bars('BTC-USDT', '15m', 5760)
     btc_t = add_technicals(btc15)
     btc_trend = btc_trend_series(btc15) if btc15 is not None else None
     start_ts = btc15.iloc[0]['ts'].to_pydatetime() if btc15 is not None else datetime.now(timezone.utc) - timedelta(days=10)
@@ -368,8 +375,8 @@ def main():
     for sym in TOKENS:
         print(f"  {DIM}Scanning {sym:<14}{RST}", end='', flush=True)
 
-        bars15 = fetch_bars(sym, '15m', 1000)
-        bars4h  = fetch_bars(sym, '4h',  200)
+        bars15 = fetch_bars(sym, '15m', 5760)   # ~90 days
+        bars4h  = fetch_bars(sym, '4H',  1080)  # ~90 days 4H
         import time; time.sleep(0.1)
 
         t15 = add_technicals(bars15)
