@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Altcoin 15m Signal Backtest  v3
+Altcoin 15m Signal Backtest  v4
 Components: Volume>120% · MACD fresh-cross · EMA 9/21/50 · RSI filter · 4H MACD · BTC trend
 Max score = 9  |  Signal fires at >= 8
 Risk mgmt: daily loss limit per token
@@ -18,9 +18,9 @@ warnings.filterwarnings('ignore')
 OKX = 'https://www.okx.com/api/v5/market'
 
 TOKENS = [
-    # Whitelist: SOL, ARB, OP, PENDLE dropped (consistent losers in prior A/B test)
-    'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','WIF-USDT',
-    'ENA-USDT','INJ-USDT','AVAX-USDT','TAO-USDT',
+    # v3 whitelist minus WIF + INJ (consistent losers after RSI filter A/B test)
+    'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT',
+    'ENA-USDT','AVAX-USDT',
 ]
 
 CFG = {
@@ -41,7 +41,9 @@ CFG = {
     'sl_atr':           1.5,
     'tp1_atr':          3.0,
     'signal_min':       8,    # out of max 9
-    'daily_loss_limit': 200,  # $ per token per calendar day
+    'daily_loss_limit': 150,  # $ per token per calendar day
+    'consec_sl_limit':  2,    # consecutive SLs before cooldown triggers
+    'cooldown_hours':   2,    # hours to pause after hitting consec SL limit
     'capital':          10000,
     'risk_pct':         0.02,
 }
@@ -222,7 +224,9 @@ def backtest_token(symbol, t15, t4h, btc_trend):
     equity  = [capital]
     in_tr   = False
     trade   = None
-    daily_loss = {}   # date → cumulative loss for this token today
+    daily_loss    = {}    # date → cumulative SL loss this token today
+    consec_sl     = 0     # consecutive SL counter
+    cooldown_until = None  # pause new entries until this timestamp
 
     if t4h is not None:
         t4h_ts   = t4h['ts'].values
@@ -263,12 +267,17 @@ def backtest_token(symbol, t15, t4h, btc_trend):
                     pnl = (trade['sl'] - trade['entry']) * trade['size']
                     capital += pnl
                     daily_loss[day] = daily_loss.get(day, 0.0) + pnl
+                    consec_sl += 1
+                    if consec_sl >= CFG['consec_sl_limit']:
+                        cooldown_until = bar_ts + pd.Timedelta(hours=CFG['cooldown_hours'])
+                        consec_sl = 0
                     trades.append({**trade, 'exit': trade['sl'], 'pnl': pnl,
                                    'result': 'SL', 'exit_ts': bar_ts})
                     equity.append(capital); in_tr = False; trade = None
                 elif hi >= trade['tp1']:
                     pnl = (trade['tp1'] - trade['entry']) * trade['size']
                     capital += pnl
+                    consec_sl = 0
                     trades.append({**trade, 'exit': trade['tp1'], 'pnl': pnl,
                                    'result': 'TP', 'exit_ts': bar_ts})
                     equity.append(capital); in_tr = False; trade = None
@@ -277,19 +286,26 @@ def backtest_token(symbol, t15, t4h, btc_trend):
                     pnl = (trade['entry'] - trade['sl']) * trade['size']
                     capital += pnl
                     daily_loss[day] = daily_loss.get(day, 0.0) + pnl
+                    consec_sl += 1
+                    if consec_sl >= CFG['consec_sl_limit']:
+                        cooldown_until = bar_ts + pd.Timedelta(hours=CFG['cooldown_hours'])
+                        consec_sl = 0
                     trades.append({**trade, 'exit': trade['sl'], 'pnl': pnl,
                                    'result': 'SL', 'exit_ts': bar_ts})
                     equity.append(capital); in_tr = False; trade = None
                 elif lo <= trade['tp1']:
                     pnl = (trade['entry'] - trade['tp1']) * trade['size']
                     capital += pnl
+                    consec_sl = 0
                     trades.append({**trade, 'exit': trade['tp1'], 'pnl': pnl,
                                    'result': 'TP', 'exit_ts': bar_ts})
                     equity.append(capital); in_tr = False; trade = None
 
-        # New entry — skip if daily loss limit hit for this token
+        # New entry — skip if daily loss limit or cooldown active
         if not in_tr:
             if daily_loss.get(day, 0.0) <= -CFG['daily_loss_limit']:
+                continue
+            if cooldown_until is not None and bar_ts < cooldown_until:
                 continue
             sig = score_row(r15, m4b, m4be, btc_d)
             if sig and sig['score'] >= CFG['signal_min']:
@@ -348,6 +364,19 @@ def compute_stats(all_trades, combined_equity, start_ts, end_ts):
         bw  = (sub['pnl'] > 0).sum()
         buckets[sc] = {'n': len(sub), 'wr': bw / len(sub) * 100, 'pnl': sub['pnl'].sum()}
 
+    # Long vs short breakdown
+    def dir_stats(sub):
+        if len(sub) == 0:
+            return {'n': 0, 'wr': 0, 'pnl': 0, 'pf': 0}
+        w = (sub['pnl'] > 0).sum()
+        gw = sub[sub['pnl'] > 0]['pnl'].sum()
+        gl = abs(sub[sub['pnl'] < 0]['pnl'].sum())
+        return {'n': len(sub), 'wr': w / len(sub) * 100,
+                'pnl': sub['pnl'].sum(), 'pf': gw / gl if gl > 0 else float('inf')}
+
+    long_st  = dir_stats(df[df['dir'] ==  1])
+    short_st = dir_stats(df[df['dir'] == -1])
+
     return {
         'n_trades':  n,
         'n_wins':    int(nw),
@@ -367,6 +396,8 @@ def compute_stats(all_trades, combined_equity, start_ts, end_ts):
         'weeks':     weeks,
         'days':      days,
         'buckets':   buckets,
+        'long':      long_st,
+        'short':     short_st,
     }
 
 # ── Print helpers ─────────────────────────────────────────────────────────────
@@ -379,7 +410,7 @@ def pct_color(v, good=0):
 
 def main():
     print(f"\n{BOLD}{CYAN}{'═'*72}{RST}")
-    print(f"{BOLD}{CYAN}  ALTCOIN 15m BACKTEST v3  —  {len(TOKENS)}T  ·  score≥8/9  ·  RSI  ·  daily-loss${CFG['daily_loss_limit']}{RST}")
+    print(f"{BOLD}{CYAN}  ALTCOIN 15m BACKTEST v4  —  {len(TOKENS)}T  ·  score≥8/9  ·  RSI  ·  cooldown  ·  L/S split{RST}")
     print(f"{BOLD}{CYAN}{'═'*72}{RST}\n")
     print(f"{DIM}  Fetching BTC reference data...{RST}", end='', flush=True)
 
@@ -463,6 +494,18 @@ def main():
         col  = GREEN if b['pnl'] > 0 else RED
         wr_c = GREEN if b['wr'] > 55 else YEL if b['wr'] > st['be_wr'] else RED
         print(f"  {sc:<8.1f} {b['n']:>8} {wr_c}{b['wr']:>9.1f}%{RST} {col}${b['pnl']:>10.2f}{RST}")
+
+    print(f"\n{BOLD}  LONG vs SHORT BREAKDOWN{RST}")
+    print(f"  {'Direction':<12} {'Trades':>8} {'Win Rate':>10} {'P&L':>12} {'PF':>8}")
+    print(f"  {DIM}{'─'*52}{RST}")
+    for label, ds in [('LONG  ▲', st['long']), ('SHORT ▼', st['short'])]:
+        if ds['n'] == 0:
+            print(f"  {label:<12} {'—':>8}")
+            continue
+        col  = GREEN if ds['pnl'] > 0 else RED
+        wr_c = GREEN if ds['wr'] > 55 else YEL if ds['wr'] > st['be_wr'] else RED
+        pf_c = GREEN if ds['pf'] > 1.3 else YEL
+        print(f"  {label:<12} {ds['n']:>8} {wr_c}{ds['wr']:>9.1f}%{RST} {col}${ds['pnl']:>10.2f}{RST} {pf_c}{ds['pf']:>7.2f}x{RST}")
 
     print(f"\n{BOLD}  TOKEN RANKING{RST}  (by P&L)")
     print(f"  {'Symbol':<14} {'Trades':>7} {'WR':>7} {'P&L':>12}")
