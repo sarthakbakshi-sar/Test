@@ -78,7 +78,7 @@ function updateDashboard() {
 function getMacroScore() {
   var cache  = CacheService.getScriptCache();
   var today  = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
-  var cached = cache.get('gold_proven_' + today);
+  var cached = cache.get('gold_proven_v3_' + today);
   if (cached) { try { return JSON.parse(cached); } catch(e) {} }
 
   function yf(sym, range) {
@@ -106,15 +106,15 @@ function getMacroScore() {
   result.goldPriceD = gold[n-1];
   var e50 = emaArr(gold, 50);
 
-  var s_trend = gold[n-2] > e50[n-2]                                      ? 1 : -1;
-  var s_yield = (tnx && tnx.length >= 3)
-    ? (tnx[tnx.length-2] < tnx[tnx.length-3]                             ? 1 : -1) : 0;
-  var s_dxy   = (dxy && dxy.length >= 3)
-    ? ((dxy[dxy.length-2]/dxy[dxy.length-3] - 1) < 0                     ? 1 : -1) : 0;
-  var s_mom   = n >= 8  ? (gold[n-2] > gold[n-7]                         ? 1 : -1) : 0;
-  var s_gdx   = (gdx && gdx.length >= 3 && n >= 3)
-    ? ((gdx[gdx.length-2]/gdx[gdx.length-3] - 1) >
-       (gold[n-2]/gold[n-3] - 1)                                          ? 1 : -1) : 0;
+  var s_trend = gold[n-1] > e50[n-1]                                      ? 1 : -1;
+  var s_yield = (tnx && tnx.length >= 2)
+    ? (tnx[tnx.length-1] < tnx[tnx.length-2]                             ? 1 : -1) : 0;
+  var s_dxy   = (dxy && dxy.length >= 2)
+    ? ((dxy[dxy.length-1]/dxy[dxy.length-2] - 1) < 0                     ? 1 : -1) : 0;
+  var s_mom   = n >= 7  ? (gold[n-1] > gold[n-6]                         ? 1 : -1) : 0;
+  var s_gdx   = (gdx && gdx.length >= 2 && n >= 2)
+    ? ((gdx[gdx.length-1]/gdx[gdx.length-2] - 1) >
+       (gold[n-1]/gold[n-2] - 1)                                          ? 1 : -1) : 0;
 
   var raw      = s_trend + s_yield + s_dxy + s_mom + s_gdx;
   result.score = Math.round(raw / 5 * 100) / 10;
@@ -124,12 +124,12 @@ function getMacroScore() {
   var agree = Math.abs(raw);  // 1, 3, or 5
   result.strength = agree === 5 ? 'STRONG' : agree === 3 ? 'MODERATE' : 'WEAK';
 
-  var mom5pct  = n >= 8 ? Math.round((gold[n-2]/gold[n-7] - 1)*1000)/10 : 0;
-  var gdxDelta = (gdx && gdx.length >= 3 && n >= 3)
-    ? Math.round(((gdx[gdx.length-2]/gdx[gdx.length-3]) - (gold[n-2]/gold[n-3]))*1000)/10 : 0;
+  var mom5pct  = n >= 7 ? Math.round((gold[n-1]/gold[n-6] - 1)*1000)/10 : 0;
+  var gdxDelta = (gdx && gdx.length >= 2 && n >= 2)
+    ? Math.round(((gdx[gdx.length-1]/gdx[gdx.length-2]) - (gold[n-1]/gold[n-2]))*1000)/10 : 0;
 
   result.components = [
-    { name:'Gold vs EMA50',    val:s_trend, note:'Gold '+(s_trend>0?'above':'below')+' EMA50 ('+Math.round(e50[n-2])+') — macro trend' },
+    { name:'Gold vs EMA50',    val:s_trend, note:'Gold '+(s_trend>0?'above':'below')+' EMA50 ('+Math.round(e50[n-1])+') — macro trend' },
     { name:'10Y yield dir',    val:s_yield, note:'Yield '+(s_yield>0?'falling ↓  bullish for gold':'rising ↑  bearish for gold') },
     { name:'DXY direction',    val:s_dxy,   note:'DXY '+(s_dxy>0?'falling ↓  gold-positive':'rising ↑  gold-negative') },
     { name:'Gold 5d momentum', val:s_mom,   note:(mom5pct>=0?'+':'')+mom5pct+'% over 5 days' },
@@ -137,8 +137,8 @@ function getMacroScore() {
   ];
 
   // Short TTL when VIX is null so a failed fetch retries on next cycle instead of poisoning cache
-  var cacheTtl = result.vix !== null ? 21600 : 300;
-  cache.put('gold_proven_' + today, JSON.stringify(result), cacheTtl);
+  var cacheTtl = result.vix !== null ? 600 : 300;
+  cache.put('gold_proven_v3_' + today, JSON.stringify(result), cacheTtl);
   return result;
 }
 
