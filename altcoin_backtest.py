@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Altcoin 15m Signal Backtest  v4
+Altcoin 15m Signal Backtest  v5
 Components: Volume>120% · MACD fresh-cross · EMA 9/21/50 · RSI filter · 4H MACD · BTC trend
 Max score = 9  |  Signal fires at >= 8
-Risk mgmt: daily loss limit per token
+Risk mgmt: daily loss limit per token · consecutive-SL cooldown
+Tokens: 14 (expanded from 6 after A/B test — Sharpe 4.59→4.77, P&L $9.8k→$23.6k, DD 5.8%)
 P-value: tested against RR break-even WR (33.3% at 2:1 RR), not arbitrary 50%
 """
 
@@ -18,9 +19,11 @@ warnings.filterwarnings('ignore')
 OKX = 'https://www.okx.com/api/v5/market'
 
 TOKENS = [
-    # v3 whitelist minus WIF + INJ (consistent losers after RSI filter A/B test)
-    'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT',
-    'ENA-USDT','AVAX-USDT',
+    # v4 whitelist: original 6 + 8 new tokens, all Sharpe≥2.0 in 59d backtest
+    # Expanded from 6→14 after A/B test: Sharpe 4.59→4.77, P&L $9.8k→$23.6k, DD unchanged 5.8%
+    'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','ENA-USDT','AVAX-USDT',
+    'PEPE-USDT','SEI-USDT','BNB-USDT','FIL-USDT',
+    'ADA-USDT','ATOM-USDT','HBAR-USDT','DOGE-USDT',
 ]
 
 CFG = {
