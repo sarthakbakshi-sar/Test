@@ -18,9 +18,9 @@ OKX = 'https://www.okx.com/api/v5/market'
 
 # OKX spot symbols (USDT pairs)
 TOKENS = [
-    'SOL-USDT','AVAX-USDT','LINK-USDT','INJ-USDT','SUI-USDT',
-    'APT-USDT','ARB-USDT','OP-USDT','DOT-USDT','WIF-USDT',
-    'PENDLE-USDT','TAO-USDT','ENA-USDT',
+    # Winners / breakeven — SOL, ARB, OP, PENDLE dropped (consistent losers in score-8 test)
+    'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','WIF-USDT',
+    'ENA-USDT','INJ-USDT','AVAX-USDT','TAO-USDT',
 ]
 
 CFG = {
@@ -35,7 +35,7 @@ CFG = {
     'atr_period': 14,
     'sl_atr':     1.5,
     'tp1_atr':    3.0,
-    'signal_min': 7,    # sweet spot from initial run
+    'signal_min': 8,    # fresh-cross-only: score 7 loses, score 8 wins
     'capital':    10000,
     'risk_pct':   0.02,
 }
@@ -164,13 +164,10 @@ def score_row(r15, macd4h_bull, macd4h_bear, btc_dir):
     if r15['vol_ok']:
         score += 2
 
-    # MACD 15m (2 pts — fresh cross; 1 pt — aligned only)
+    # MACD 15m (2 pts — fresh cross only; no partial credit)
     fresh = r15['cx_long'] if dir_ == 1 else r15['cx_short']
-    algn  = r15['macd_bull'] if dir_ == 1 else r15['macd_bear']
     if fresh:
         score += 2
-    elif algn:
-        score += 1
 
     # EMA stack (2 pts)
     if (dir_ == 1 and r15['ema_long']) or (dir_ == -1 and r15['ema_short']):
@@ -356,7 +353,7 @@ def val_color(v, good=0):
 
 def main():
     print(f"\n{BOLD}{CYAN}{'═'*70}{RST}")
-    print(f"{BOLD}{CYAN}  ALTCOIN 15m SIGNAL BACKTEST  —  {len(TOKENS)} tokens  ·  ~90 days  ·  OKX  ·  score≥7{RST}")
+    print(f"{BOLD}{CYAN}  ALTCOIN 15m SIGNAL BACKTEST  —  {len(TOKENS)} tokens  ·  ~90 days  ·  OKX  ·  score≥8  ·  whitelist{RST}")
     print(f"{BOLD}{CYAN}{'═'*70}{RST}\n")
     print(f"{DIM}  Fetching BTC reference data...{RST}", end='', flush=True)
 
