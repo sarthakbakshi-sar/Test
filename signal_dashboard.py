@@ -8,8 +8,14 @@ import yfinance as yf
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone, timedelta
+import urllib.request
+import json
 import warnings
 warnings.filterwarnings('ignore')
+
+# ── OKX
+OKX_BASE    = 'https://www.okx.com'
+AU_OKX_INST = 'XAU-USDT-SWAP'
 
 # ── CONFIG
 ACCOUNT  = 10000
@@ -119,6 +125,34 @@ def fetch_bars(sym, interval, period):
         df = hist[['High','Low','Close']].rename(columns={'High':'h','Low':'l','Close':'c'})
         return df
     except:
+        return None
+
+# ── Fetch OKX candle bars (h/l/c DataFrame, UTC-indexed, oldest→newest)
+def fetch_okx_bars(inst_id, bar, total=300):
+    try:
+        url = f'{OKX_BASE}/api/v5/market/candles?instId={inst_id}&bar={bar}&limit=300'
+        req = urllib.request.Request(url, headers={'User-Agent': 'python-signal/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read())
+        if d.get('code') != '0' or not d.get('data'):
+            return None
+        rows = list(d['data'])  # newest first
+        while len(rows) < total and len(d['data']) == 300:
+            oldest_ts = rows[-1][0]
+            url2 = f'{OKX_BASE}/api/v5/market/history-candles?instId={inst_id}&bar={bar}&after={oldest_ts}&limit=300'
+            req2 = urllib.request.Request(url2, headers={'User-Agent': 'python-signal/1.0'})
+            with urllib.request.urlopen(req2, timeout=10) as r2:
+                d = json.loads(r2.read())
+            if d.get('code') != '0' or not d.get('data'):
+                break
+            rows = rows + list(d['data'])
+        rows.reverse()  # oldest first
+        ts = [pd.Timestamp(int(r[0]), unit='ms', tz='UTC') for r in rows]
+        df = pd.DataFrame({'h': [float(r[2]) for r in rows],
+                           'l': [float(r[3]) for r in rows],
+                           'c': [float(r[4]) for r in rows]}, index=ts)
+        return df
+    except Exception:
         return None
 
 # ── Session state
@@ -399,7 +433,7 @@ def print_snapshot(auM, clM, hgM, auSS, clSS, hgSS, auSU, clSU, hgSU, now_utc):
     # Quick snapshot table
     print()
     print(col("  ┌─────────────────────────────────┬─────────────────────────────────┬─────────────────────────────────┐", DIM))
-    print(col("  │", DIM) + col(f"  ⚡  GOLD  (GC=F)".center(33), GOLD_C+BOLD) +
+    print(col("  │", DIM) + col(f"  ⚡  GOLD  (OKX SWAP)".center(33), GOLD_C+BOLD) +
           col("│", DIM) + col(f"  ⚡  OIL  (CL=F)".center(33), OIL_C+BOLD) +
           col("│", DIM) + col(f"  ⚡  COPPER (HG=F)".center(33), CU_C+BOLD) + col("│", DIM))
     print(col("  ├─────────────────────────────────┼─────────────────────────────────┼─────────────────────────────────┤", DIM))
@@ -478,7 +512,7 @@ def print_model(name, sym, color, macro, tech, ss, setup, now_utc):
           f"Direction: {col(('▲ LONG' if macro['dir']==1 else '▼ SHORT')+' '+macro['strength'], G if macro['dir']==1 else R)}")
 
     # Score
-    if sym == 'GC=F':
+    if sym == AU_OKX_INST:
         sc = f"{macro['score']:+.1f}% (raw {macro['raw']:+d}/5) — any majority fires direction"
     else:
         maxR = 7 if sym=='CL=F' else 5
@@ -552,7 +586,7 @@ def print_model(name, sym, color, macro, tech, ss, setup, now_utc):
         print(f"    Stop Loss: {col(sl_str, R+BOLD)}   ({SL_MULT}×ATR = {atr_sl})")
         print(f"    TP1 (60%): {col(tp1_str, G+BOLD)}   ({TP1_MULT}×ATR = +{atr_t1})")
         print(f"    TP2 (40%): {col(tp2_str, C+BOLD)}   ({TP2_MULT}×ATR = +{atr_t2})")
-        unit = 'oz' if sym=='GC=F' else ('bbl' if sym=='CL=F' else 'lbs')
+        unit = 'oz' if sym in ('GC=F', AU_OKX_INST) else ('bbl' if sym=='CL=F' else 'lbs')
         print(f"    Size:      {col(str(setup['size'])+' '+unit, W+BOLD)}   (risk ${setup['risk_$']})")
         print(f"    ATR:       ${setup['atr']:.{prec2}f}")
     elif setup['action'] == 'SKIP':
@@ -563,7 +597,7 @@ def print_model(name, sym, color, macro, tech, ss, setup, now_utc):
     if tech:
         print(f"\n  {col('KEY LEVELS', C)}")
         prec2 = 4 if sym=='HG=F' else 2
-        if sym == 'GC=F' and tech.get('h4e50'):
+        if sym == AU_OKX_INST and tech.get('h4e50'):
             print(f"    {'4H EMA50'.ljust(22)} {col('$'+str(round(tech['h4e50'],2)), W)}  {col('short gate (blocked above)', DIM)}")
             print(f"    {'4H EMA9'.ljust(22)} {col('$'+str(round(tech['h4e9'],2)), W)}")
             print(f"    {'4H EMA21'.ljust(22)} {col('$'+str(round(tech['h4e21'],2)), W)}")
@@ -599,9 +633,17 @@ def main():
     daily = fetch_daily(SYMS)
     print(col(f" done ({len(daily)}/{len(SYMS)} symbols)", DIM))
 
-    print(col('Fetching intraday bars (6 requests)...', DIM), end='', flush=True)
-    au15 = fetch_bars('GC=F',  '15m', '5d')
-    au1h = fetch_bars('GC=F',  '1h',  '60d')
+    print(col(f'Fetching OKX {AU_OKX_INST} bars...', DIM), end='', flush=True)
+    # Gold: pull from OKX XAU-USDT-SWAP (user's actual traded instrument)
+    au15 = fetch_okx_bars(AU_OKX_INST, '15m', total=600)   # ~5 days
+    au4h = fetch_okx_bars(AU_OKX_INST, '4H',  total=300)   # ~50 days → EMA50
+    okx_day = fetch_okx_bars(AU_OKX_INST, '1D', total=100)
+    # Override GC=F daily closes with OKX daily so macro EMA50 matches actual price
+    if okx_day is not None and len(okx_day) >= 10:
+        daily['GC=F'] = okx_day['c'].values
+    print(col(f' done (15m:{len(au15) if au15 is not None else 0} 4H:{len(au4h) if au4h is not None else 0} 1D:{len(okx_day) if okx_day is not None else 0} bars)', DIM))
+
+    print(col('Fetching intraday bars (4 requests)...', DIM), end='', flush=True)
     cl15 = fetch_bars('CL=F',  '15m', '5d')
     cl1h = fetch_bars('CL=F',  '1h',  '60d')
     hg15 = fetch_bars('HG=F',  '15m', '5d')
@@ -613,8 +655,8 @@ def main():
     clM = get_cl_macro(daily)
     hgM = get_hg_macro(daily)
 
-    # Technicals
-    auT = get_au_tech(au15, au1h)
+    # Technicals (gold uses OKX 4H bars directly — no resampling needed)
+    auT = get_au_tech(au15, au4h)
     clT = get_cl_tech(cl15, cl1h)
     hgT = get_hg_tech(hg15, hg1h)
 
@@ -631,7 +673,7 @@ def main():
     # Print
     print_header(now_utc, now_dxb, mon, dow)
     print_snapshot(auM, clM, hgM, auSS, clSS, hgSS, auSU, clSU, hgSU, now_utc)
-    print_model('GOLD',   'GC=F',  GOLD_C, auM, auT, auSS, auSU, now_utc)
+    print_model('GOLD',   AU_OKX_INST,  GOLD_C, auM, auT, auSS, auSU, now_utc)
     print_model('OIL',    'CL=F',  OIL_C,  clM, clT, clSS, clSU, now_utc)
     print_model('COPPER', 'HG=F',  CU_C,   hgM, hgT, hgSS, hgSU, now_utc)
     print()
