@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gold_backtest_v2.py — Gold model v1 vs v2 comparison
+gold_backtest_v2.py — Gold model v1 vs v2 vs v3 comparison
 Data: OKX XAU-USDT-SWAP (OHLCV) + FRED (yields, DXY, VIX)
 No June skip · LONG+SHORT · 2022-01-01 to today
 
@@ -17,6 +17,8 @@ V2 adds 5 technical factors:
   s8:  RSI(14) momentum (>60=bull, <40=bear)
   s9:  Fast MACD(5,13,4) direction — intraday proxy
   s10: Gold 2d momentum (short-term continuation)
+
+V3 (9 factors): drops VIX (s5), keeps yields+DXY+all technicals
 """
 
 import urllib.request, json, time, io
@@ -167,6 +169,8 @@ def stats(df, label):
     gross_l = abs(df[df['r'] < 0]['r'].sum())
     pf = gross_w / gross_l if gross_l > 0 else float('inf')
 
+    n_weeks = max(1, (df['date'].max() - df['date'].min()).days / 7)
+
     print(f"\n{'═'*64}")
     print(f'  {label}')
     print(f"{'═'*64}")
@@ -174,6 +178,7 @@ def stats(df, label):
     print(f"  Total R   {df['r'].sum():>+8.2f}R")
     print(f"  Win rate  {len(wins)/len(df)*100:>7.1f}%")
     print(f"  Avg R     {df['r'].mean():>+8.3f}R/trade")
+    print(f"  Per week  {len(df)/n_weeks:>7.1f} trades/wk")
     print(f"  Max DD    {dd:>+8.2f}R")
     print(f"  Prof fac  {pf:>8.2f}")
     print(f"  Best      {df['r'].max():>+8.2f}R   Worst {df['r'].min():>+.2f}R")
@@ -308,6 +313,10 @@ for i in range(60, len(dates) - MAX_HOLD - 2):
 
     v2_raw = v1_raw + s6 + s7 + s8 + s9 + s10
 
+    # V3: drop VIX (s5), keep yields+DXY (s2,s3), keep all technicals
+    # 9 factors: s1 s2 s3 s4 s6 s7 s8 s9 s10
+    v3_raw = s1 + s2 + s3 + s4 + s6 + s7 + s8 + s9 + s10
+
     # ── ENTRY PRICE (next bar open) ──────────────────────────────────────
     entry_price = float(gc_op.iloc[i+1])
     if np.isnan(entry_price):
@@ -322,7 +331,7 @@ for i in range(60, len(dates) - MAX_HOLD - 2):
     month = d.month
     year  = d.year
 
-    for (raw_score, model_lbl) in [(v1_raw, 'v1'), (v2_raw, 'v2')]:
+    for (raw_score, model_lbl) in [(v1_raw, 'v1'), (v2_raw, 'v2'), (v3_raw, 'v3')]:
         direction = 'LONG' if raw_score > 0 else ('SHORT' if raw_score < 0 else None)
         if direction is None:
             continue
@@ -345,13 +354,14 @@ start_dt = df_all['date'].min().date() if not df_all.empty else '?'
 end_dt   = df_all['date'].max().date() if not df_all.empty else '?'
 
 print(f"\n{'═'*64}")
-print(f'  GOLD BACKTEST v1 vs v2  ·  {start_dt} – {end_dt}')
+print(f'  GOLD BACKTEST v1 vs v2 vs v3  ·  {start_dt} – {end_dt}')
 print(f'  SL=0.75×ATR  TP1=1.5×ATR(60%)  TP2=2.5×ATR(40%)  Hold≤{MAX_HOLD}d')
 print(f'  No June skip · LONG+SHORT · OKX XAU-USDT-SWAP')
 print(f"{'═'*64}")
 
 df_v1 = df_all[df_all['model'] == 'v1']
 df_v2 = df_all[df_all['model'] == 'v2']
+df_v3 = df_all[df_all['model'] == 'v3']
 
 # V1 thresholds
 for t in [3, 4, 5]:
@@ -370,6 +380,11 @@ stats(sub_orig, 'V1 ORIGINAL — LONG-only · June skip · ≥3/5')
 for t in [5, 6, 7, 8]:
     sub = df_v2[df_v2['abs_score'] >= t]
     stats(sub, f'V2 (10 factors macro+tech)  |score|≥{t}/10')
+
+# V3 thresholds (9 factors: no VIX, yields+DXY+technicals)
+for t in [4, 5, 6, 7]:
+    sub = df_v3[df_v3['abs_score'] >= t]
+    stats(sub, f'V3 (9 factors: yields+DXY+tech, no VIX)  |score|≥{t}/9')
 
 # ── FACTOR ANALYSIS ──────────────────────────────────────────────────────
 print(f"\n{'═'*64}")
