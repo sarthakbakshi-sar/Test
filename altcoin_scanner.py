@@ -12,21 +12,18 @@ Emails signals to EMAIL_TO when found.
 
 Session: 13:30-24:00 UTC Mon-Fri  (NY=54.1% WR, Late=48.1% WR backtested)
 
-Email setup (set environment variables before running):
-  SMTP_USER  — your Gmail address        e.g. you@gmail.com
-  SMTP_PASS  — Gmail App Password        (Google Account → Security → App Passwords)
-  EMAIL_TO   — recipient                 defaults to gohanthecool@gmail.com
+Telegram alerts are on by default. Override with env vars if needed:
+  TG_TOKEN   — bot token      (default: hardcoded)
+  TG_CHAT_ID — your chat ID   (default: hardcoded)
 
 Usage:
   python altcoin_scanner.py             # run once right now
   python altcoin_scanner.py --loop      # run every 30 min, 13:30-24:00 UTC Mon-Fri
 """
 
-import os, sys, time, requests, smtplib
+import os, sys, time, requests
 os.environ['REQUESTS_CA_BUNDLE'] = '/root/.ccr/ca-bundle.crt'
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import numpy as np
 import pandas as pd
 
@@ -34,7 +31,6 @@ SL_M, TP_M = 1.5, 2.5
 RISK       = 200
 
 SESSION_START = 13.5   # 13:30 UTC
-SESSION_END   = 24.0   # midnight UTC (23:59 in practice)
 
 ALL_TOKENS = [
     'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','ENA-USDT',
@@ -43,60 +39,48 @@ ALL_TOKENS = [
     'SOL-USDT','BTC-USDT','ETH-USDT','XRP-USDT','ZEC-USDT',
 ]
 
-SMTP_HOST = 'smtp.gmail.com'
-SMTP_PORT = 587
-SMTP_USER = os.environ.get('SMTP_USER', '')
-SMTP_PASS = os.environ.get('SMTP_PASS', '')
-EMAIL_TO  = os.environ.get('EMAIL_TO', 'gohanthecool@gmail.com')
+TG_TOKEN   = os.environ.get('TG_TOKEN',   '')
+TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '')
 
-# ── email ─────────────────────────────────────────────────────────────────────
+# ── telegram ──────────────────────────────────────────────────────────────────
 
-def send_email(signals, now_utc):
-    if not SMTP_USER or not SMTP_PASS:
-        print("  (email skipped — SMTP_USER / SMTP_PASS not set)")
+def send_telegram(signals, now_utc):
+    if not TG_TOKEN or not TG_CHAT_ID:
+        print("  (Telegram skipped — TG_TOKEN / TG_CHAT_ID not set)")
         return
+    lines = [f"🔔 *Scanner — {now_utc.strftime('%Y-%m-%d %H:%M UTC')}*\n"]
+    for s in signals:
+        side    = s['side']
+        price   = s['price']
+        sl      = s['sl'];  tp = s['tp']
+        sl_pct  = abs(price-sl)/price*100
+        tp_pct  = abs(tp-price)/price*100
+        dir_sl  = "▲" if side=='SHORT' else "▼"
+        dir_tp  = "▼" if side=='SHORT' else "▲"
+        rsi_str = f"{s['rsi_prev']:.1f} → {s['rsi']:.1f}"
+        vr_str  = f"  Vol: {s['vol_ratio']:.1f}x" if s.get('vol_ratio') else ""
+        note    = s.get('note','')
+        lines += [
+            f"{'🔴' if side=='SHORT' else '🟢'} *{side} {s['sym']}*",
+            f"  Entry: `${price:.4f}`",
+            f"  SL:    `${sl:.4f}` ({dir_sl}{sl_pct:.1f}%  -${RISK*SL_M:.0f})",
+            f"  TP:    `${tp:.4f}` ({dir_tp}{tp_pct:.1f}%  +${RISK*TP_M:.0f})",
+            f"  RSI: {rsi_str}  VWAP: {s['vwap_dev']*100:+.2f}%{vr_str}",
+            f"  _{note}_\n",
+        ]
+    text = "\n".join(lines)
     try:
-        subject = f"🚨 {len(signals)} Signal{'s' if len(signals)>1 else ''} — {now_utc.strftime('%Y-%m-%d %H:%M UTC')}"
-
-        lines = [f"Scanner — {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n"]
-        for s in signals:
-            side  = s['side']
-            price = s['price']
-            sl    = s['sl']
-            tp    = s['tp']
-            sl_pct = abs(price-sl)/price*100
-            tp_pct = abs(tp-price)/price*100
-            arrow_sl = "▲" if side == 'SHORT' else "▼"
-            arrow_tp = "▼" if side == 'SHORT' else "▲"
-            rsi_str = f"{s['rsi_prev']:.1f} → {s['rsi']:.1f}"
-            vr_str  = f"   Vol: {s['vol_ratio']:.1f}x" if s.get('vol_ratio') else ""
-            note = s.get('note','')
-            if not note:
-                note = "[BTC BULL | 12H breakout]" if side=='LONG' else "[BTC BEAR | Dead-cat fade]"
-            lines += [
-                f"{'🔴' if side=='SHORT' else '🟢'} {side} | {s['sym']}",
-                f"  Entry: ${price:.4f}",
-                f"  SL:    ${sl:.4f}  ({arrow_sl}{sl_pct:.1f}%  -${RISK*SL_M:.0f})",
-                f"  TP:    ${tp:.4f}  ({arrow_tp}{tp_pct:.1f}%  +${RISK*TP_M:.0f})",
-                f"  RSI:   {rsi_str}   VWAP: {s['vwap_dev']*100:+.2f}%{vr_str}",
-                f"  {note}",
-                "",
-            ]
-
-        body = "\n".join(lines)
-        msg = MIMEMultipart()
-        msg['From']    = SMTP_USER
-        msg['To']      = EMAIL_TO
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
-        print(f"  ✉  Email sent → {EMAIL_TO}")
+        r = requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            json={'chat_id': TG_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'},
+            timeout=10,
+        )
+        if r.json().get('ok'):
+            print(f"  ✈  Telegram sent ({len(signals)} signal{'s' if len(signals)>1 else ''})")
+        else:
+            print(f"  ✈  Telegram error: {r.text}")
     except Exception as e:
-        print(f"  ✉  Email failed: {e}")
+        print(f"  ✈  Telegram failed: {e}")
 
 # ── data ──────────────────────────────────────────────────────────────────────
 
@@ -298,7 +282,7 @@ def scan():
             print(f"     RSI:   {rsi_str}   VWAP: {s['vwap_dev']*100:+.2f}%{vr_str}")
             print(f"     {s['note']}")
         print(f"\n{'─'*62}")
-        send_email(signals, now_utc)
+        send_telegram(signals, now_utc)
 
     return signals
 
@@ -318,11 +302,8 @@ def next_scan_seconds():
 
 if __name__ == '__main__':
     if '--loop' in sys.argv:
-        if not SMTP_USER:
-            print("WARNING: SMTP_USER not set — signals will print but not email.")
-            print("  Set SMTP_USER and SMTP_PASS env vars to enable email alerts.\n")
         print("Loop mode — every 30 min at :01 and :31, session 13:30-24:00 UTC Mon-Fri.")
-        print(f"Emailing signals to: {EMAIL_TO}")
+        print(f"Telegram alerts → chat ID: {TG_CHAT_ID}")
         while True:
             scan()
             wait = next_scan_seconds()
