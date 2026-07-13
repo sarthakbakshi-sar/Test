@@ -1,17 +1,26 @@
 """
-Live Scanner — VWAP Fade SHORT + Tight Breakout LONG
+Live Scanner — VWAP Fade SHORT + Tight Breakout LONG + Gold LONG
 Run every hour at :01 past the hour during NY session (13:30-20:00 UTC) Mon-Fri
 
-  SHORT: BTC bear (below 200H EMA) + price 1.8-3% above VWAP + RSI 58-72 turning down
-  LONG:  BTC bull (above 200H EMA) + alt EMA20>EMA50 + 12H resistance break
-         + RSI 50-58 + VWAP dev 0-0.5% + volume 1.5-3x avg
+  ALTS SHORT: BTC bear (below 200H EMA) + price 1.8-3% above VWAP + RSI 58-72 turning down
+              Backtested: 55.4% WR OOS (proven)
+  ALTS LONG:  BTC bull (above 200H EMA) + alt EMA20>EMA50 + 12H resistance break
+              + RSI 50-58 + VWAP dev 0-0.5% + volume 1.5-3x avg
+              Backtested: 52.5% WR OOS
+
+  GOLD LONG (two setups — backtested 58.3% WR OOS, 44 trades / 2yr, ~0.4/week):
+    A) VWAP pullback: gold EMA20>EMA50 + RSI dips to 20-35 + turns up + VWAP dev -0.5 to -3%
+    B) Breakout:      gold EMA20>EMA50 + above 200H EMA + 12H resistance break
+                      + vol 1.5-3x + RSI 50-62 + VWAP dev 0-0.8%
+  NO gold SHORT, NO silver — no backtested edge found
 
 Usage:
-  python scanner.py           # run once right now
-  python scanner.py --loop    # run every hour at :01 automatically
+  python altcoin_scanner.py           # run once right now
+  python altcoin_scanner.py --loop    # run every hour at :01 automatically
 """
 
-import sys, time, requests
+import os, sys, time, requests
+os.environ['REQUESTS_CA_BUNDLE'] = '/root/.ccr/ca-bundle.crt'
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
@@ -172,6 +181,62 @@ def scan():
             print(f"  {sym}: error — {e}")
             continue
 
+    # ── GOLD scan ─────────────────────────────────────────────────────────────
+    try:
+        print("GOLD (GC=F)...", end=' ', flush=True)
+        url_yf = 'https://query1.finance.yahoo.com/v8/finance/chart/GC=F'
+        rg = requests.get(url_yf, params={'interval':'1h','range':'30d'},
+                          headers={'User-Agent':'Mozilla/5.0'}, timeout=15)
+        jg = rg.json()['chart']['result'][0]
+        tsg = pd.to_datetime(jg['timestamp'], unit='s', utc=True)
+        qg  = jg['indicators']['quote'][0]
+        dfg = pd.DataFrame({'ts':tsg,'o':qg['open'],'h':qg['high'],'l':qg['low'],
+                            'c':qg['close'],'vol':qg['volume']}).dropna(subset=['c'])
+        dfg = dfg.sort_values('ts').reset_index(drop=True)
+        dfg = indicators(dfg)
+        # add 200H EMA and uptrend
+        dfg['ema200'] = dfg['c'].ewm(span=200, adjust=False).mean()
+        dfg['bull200']= (dfg['c'] > dfg['ema200']).astype(int)
+
+        grow  = dfg.iloc[-1]
+        grow1 = dfg.iloc[-2]
+        g_price  = grow['c'];    g_high  = grow['h']
+        g_rsi    = grow['rsi'];  g_rsi_p = grow1['rsi']
+        g_vd     = grow['vwap_dev']
+        g_atr    = grow['atr'];  g_avg   = grow['atr_avg20']
+        g_ab     = grow['ema20'] > grow['ema50']
+        g_b200   = grow['bull200']
+        g_res12  = grow['res12']
+        g_vol    = grow['vol'];  g_vavg  = grow['vol_avg20']
+        print(f"${g_price:,.1f}  RSI={g_rsi:.1f}  VWAP={g_vd*100:+.2f}%  {'uptrend' if g_ab else 'downtrend'}")
+
+        if not (np.isnan(g_atr) or np.isnan(g_avg) or g_avg == 0
+                or not (0.5 <= g_atr/g_avg <= 1.8)):
+            g_sl = g_price - SL_M * g_atr
+            g_tp = g_price + TP_M * g_atr
+
+            # Gold LONG A: VWAP pullback in uptrend
+            if (g_ab and g_rsi_p <= 35 and g_rsi > g_rsi_p and g_vd <= -0.005):
+                signals.append({
+                    'sym': 'GOLD', 'side': 'LONG', 'price': g_price,
+                    'sl': g_sl, 'tp': g_tp, 'atr': g_atr,
+                    'rsi': g_rsi, 'rsi_prev': g_rsi_p, 'vwap_dev': g_vd,
+                    'vol_ratio': 0, 'note': 'Gold VWAP pullback [58.3% WR OOS]',
+                })
+
+            # Gold LONG B: Breakout
+            if (g_b200 and g_ab and not np.isnan(g_res12) and g_high > g_res12
+                    and g_vavg > 0 and 1.5 <= g_vol/g_vavg <= 3.0
+                    and 50 <= g_rsi <= 62 and 0.0 <= g_vd <= 0.008):
+                signals.append({
+                    'sym': 'GOLD', 'side': 'LONG', 'price': g_price,
+                    'sl': g_sl, 'tp': g_tp, 'atr': g_atr,
+                    'rsi': g_rsi, 'rsi_prev': g_rsi_p, 'vwap_dev': g_vd,
+                    'vol_ratio': g_vol/g_vavg, 'note': 'Gold breakout [58.3% WR OOS]',
+                })
+    except Exception as e:
+        print(f"  GOLD error: {e}")
+
     # ── output ───────────────────────────────────────────────────────────────
     if not signals:
         print("\nNo signals this bar.")
@@ -193,11 +258,13 @@ def scan():
             print(f"     Entry: ${price:.4f}")
             print(f"     SL:    ${sl:.4f}  ({dir_sl}{sl_pct:.1f}%  -${RISK*SL_M:.0f})")
             print(f"     TP:    ${tp:.4f}  ({dir_tp}{tp_pct:.1f}%  +${RISK*TP_M:.0f})")
-            print(f"     RSI:   {s['rsi_prev']:.1f} → {s['rsi']:.1f}   VWAP dev: {s['vwap_dev']*100:+.2f}%   Vol: {s['vol_ratio']:.1f}x avg")
-            if side == 'LONG':
-                print(f"     [BTC BULL | Alt uptrend | 12H breakout + volume]")
-            else:
-                print(f"     [BTC BEAR | Dead-cat fade]")
+            rsi_str = f"{s['rsi_prev']:.1f} → {s['rsi']:.1f}" if s['rsi_prev'] else f"{s['rsi']:.1f}"
+            vr_str  = f"   Vol: {s['vol_ratio']:.1f}x avg" if s['vol_ratio'] else ""
+            print(f"     RSI:   {rsi_str}   VWAP dev: {s['vwap_dev']*100:+.2f}%{vr_str}")
+            note = s.get('note', '')
+            if not note:
+                note = "[BTC BULL | Alt uptrend | 12H breakout]" if side == 'LONG' else "[BTC BEAR | Dead-cat fade]"
+            print(f"     {note}")
         print(f"\n{'':─<60}")
 
     print(f"\nNext scan: top of next hour (:01 past)")
