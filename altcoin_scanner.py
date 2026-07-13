@@ -32,6 +32,7 @@ ALL_TOKENS = [
     'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','ENA-USDT',
     'AVAX-USDT','SEI-USDT','BNB-USDT','FIL-USDT','ADA-USDT','ATOM-USDT',
     'HBAR-USDT','DOGE-USDT','HYPE-USDT','TRX-USDT',
+    'SOL-USDT','BTC-USDT','ETH-USDT','XRP-USDT','ZEC-USDT',
 ]
 
 # ── data ─────────────────────────────────────────────────────────────────────
