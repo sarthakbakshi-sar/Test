@@ -3,3 +3,4 @@ forex_cache/
 btc_15m_cache.csv
 *.pyc
 .env
+setup.sh
