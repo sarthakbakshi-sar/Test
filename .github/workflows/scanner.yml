@@ -1,0 +1,28 @@
+name: Trading Scanner
+
+on:
+  schedule:
+    - cron: '1,31 13-23 * * 1-5'   # Mon-Fri 13:01-23:31 UTC
+    - cron: '1,31 0 * * 2-6'        # Tue-Sat 00:01, 00:31 UTC (= Mon-Fri midnight)
+  workflow_dispatch:                  # manual trigger from GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests numpy pandas
+
+      - name: Run scanner
+        env:
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_TO:           ${{ secrets.GMAIL_TO }}
+          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+        run: python altcoin_scanner.py
