@@ -7,8 +7,8 @@
 //  2. Run setupTrigger() from the Run menu → authorise when prompted
 //
 //  Sessions:
-//   London  07:00–13:30 UTC  → Gold Strategy B only (71.4% OOS WR)
-//   NY      13:30–24:00 UTC  → Alts + Gold A + Gold B
+//   London  07:00–13:30 UTC  → Gold B (71.4% OOS) + Crude Oil B (70.6% OOS)
+//   NY      13:30–24:00 UTC  → Alts + Gold A + Gold B + S&P 500 B (56% OOS)
 //  Logs every scan. Sends Telegram every run.
 // ─────────────────────────────────────────────────────────────
 
@@ -103,7 +103,7 @@ function runScanner() {
     }
   }
 
-  // Gold — runs in both London (B only) and NY (A + B)
+  // ── Gold (London B + NY A+B) ───────────────────────────────
   var gCtx = {};
   try {
     var dfg = fetchYahoo('GC=F');
@@ -125,23 +125,84 @@ function runScanner() {
       var gAtrOk = isFinite(gAtr) && isFinite(gAvg) && gAvg > 0 && gAtr/gAvg >= 0.5 && gAtr/gAvg <= 1.8;
       if (gAtrOk) {
         var gSl = gPrice - SL_M*gAtr, gTp = gPrice + TP_M*gAtr;
-        // Strategy A: NY session only (uptrend + RSI ≤35 bounce + VWAP ≤-0.5%)
+        // Strategy A: NY only — uptrend + RSI ≤35 bounce + VWAP ≤-0.5%
         if (isFullSession && gAb && gRsiP <= 35 && gRsi > gRsiP && gVd <= -0.005) {
           signals.push({sym:'GOLD', side:'LONG', price:gPrice, sl:gSl, tp:gTp,
                         rsi:gRsi, rsi_prev:gRsiP, vwap_dev:gVd, vol_ratio:0,
                         note:'Gold A: VWAP pullback | 78.6% WR'});
         }
-        // Strategy B: London + NY (bull200 + uptrend + 12H break + vol + RSI 50-62)
+        // Strategy B: London + NY — bull200 + uptrend + 12H break + vol 1.5-3x + RSI 50-62
         if (gBull200 && gAb && gRes12 !== null && gHigh > gRes12
             && gVr >= 1.5 && gVr <= 3.0 && gRsi >= 50 && gRsi <= 62 && gVd >= 0 && gVd <= 0.008) {
-          var session = isLondonGoldB ? 'London' : 'NY';
+          var sess = isLondonGoldB ? 'London' : 'NY';
           signals.push({sym:'GOLD', side:'LONG', price:gPrice, sl:gSl, tp:gTp,
                         rsi:gRsi, rsi_prev:gRsiP, vwap_dev:gVd, vol_ratio:gVr,
-                        note:'Gold B: Breakout [' + session + '] | 55-71% WR'});
+                        note:'Gold B: Breakout [' + sess + '] | 55-71% WR'});
         }
       }
     }
   } catch(e) { Logger.log('GOLD error: ' + e); }
+
+  // ── Crude Oil (London B only — 70.6% OOS WR) ──────────────
+  if (isLondonGoldB) {
+    try {
+      var dfcl = fetchYahoo('CL=F');
+      if (dfcl) {
+        calcIndicators(dfcl);
+        var nc   = dfcl.c.length;
+        var cEma200 = calcEMA(dfcl.c, 200);
+        var cBull200 = dfcl.c[nc-1] > cEma200[nc-1];
+        var cRsi  = dfcl.rsi[nc-1], cRsiP = dfcl.rsi[nc-2];
+        var cVd   = dfcl.vd[nc-1],  cAtr  = dfcl.atr[nc-1], cAvg = dfcl.atrAvg[nc-1];
+        var cAb   = dfcl.ema20[nc-1] > dfcl.ema50[nc-1];
+        var cRes12= dfcl.res12[nc-1],cHigh = dfcl.h[nc-1];
+        var cVol  = dfcl.vol[nc-1],  cVavg = dfcl.volAvg[nc-1];
+        var cPrice= dfcl.c[nc-1],    cVr   = cVavg > 0 ? cVol/cVavg : 0;
+        Logger.log('CRUDE $' + cPrice.toFixed(2) + ' RSI=' + cRsi.toFixed(1) + ' VWAP=' + (cVd*100).toFixed(2) + '%');
+        var cAtrOk = isFinite(cAtr) && isFinite(cAvg) && cAvg > 0 && cAtr/cAvg >= 0.5 && cAtr/cAvg <= 1.8;
+        if (cAtrOk && cBull200 && cAb && cRes12 !== null && cHigh > cRes12
+            && cVr >= 1.5 && cVr <= 3.0 && cRsi >= 50 && cRsi <= 62 && cVd >= 0 && cVd <= 0.015) {
+          var cSl = cPrice - SL_M*cAtr, cTp = cPrice + TP_M*cAtr;
+          signals.push({sym:'CRUDE OIL', side:'LONG', price:cPrice, sl:cSl, tp:cTp,
+                        rsi:cRsi, rsi_prev:cRsiP, vwap_dev:cVd, vol_ratio:cVr,
+                        note:'Crude B: London breakout | 70.6% OOS WR'});
+        }
+      }
+    } catch(e) { Logger.log('CRUDE error: ' + e); }
+  }
+
+  // ── S&P 500 (NY session — 56% OOS WR, 25 OOS trades) ─────
+  if (isFullSession) {
+    try {
+      var dfsp = fetchYahoo('^GSPC');
+      if (dfsp) {
+        calcIndicators(dfsp);
+        var ns    = dfsp.c.length;
+        var sEma200 = calcEMA(dfsp.c, 200);
+        var sBull200 = dfsp.c[ns-1] > sEma200[ns-1];
+        var sRsi  = dfsp.rsi[ns-1], sRsiP = dfsp.rsi[ns-2];
+        var sVd   = dfsp.vd[ns-1],  sAtr  = dfsp.atr[ns-1], sAvg = dfsp.atrAvg[ns-1];
+        var sAb   = dfsp.ema20[ns-1] > dfsp.ema50[ns-1];
+        var sVol  = dfsp.vol[ns-1],  sVavg = dfsp.volAvg[ns-1];
+        var sPrice= dfsp.c[ns-1],    sVr   = sVavg > 0 ? sVol/sVavg : 0;
+        // 6H resistance (rolling 6-bar high of previous bars)
+        var sRes6 = null;
+        var sH    = dfsp.h;
+        if (ns > 7) { var mx=-Infinity; for(var k=ns-7;k<ns-1;k++) mx=Math.max(mx,sH[k]); sRes6=mx; }
+        Logger.log('SP500 $' + sPrice.toFixed(0) + ' RSI=' + sRsi.toFixed(1) + ' VWAP=' + (sVd*100).toFixed(2) + '%');
+        var sAtrOk = isFinite(sAtr) && isFinite(sAvg) && sAvg > 0 && sAtr/sAvg >= 0.5 && sAtr/sAvg <= 1.8;
+        // Loose vol: 1.2-5x
+        if (sAtrOk && sBull200 && sAb && sRes6 !== null && dfsp.h[ns-1] > sRes6
+            && sVavg > 0 && sVr >= 1.2 && sVr <= 5.0
+            && sRsi >= 50 && sRsi <= 62 && sVd >= 0 && sVd <= 0.008) {
+          var sSl = sPrice - SL_M*sAtr, sTp = sPrice + TP_M*sAtr;
+          signals.push({sym:'S&P 500', side:'LONG', price:sPrice, sl:sSl, tp:sTp,
+                        rsi:sRsi, rsi_prev:sRsiP, vwap_dev:sVd, vol_ratio:sVr,
+                        note:'SP500 B: 6H breakout [NY] | 56% OOS WR'});
+        }
+      }
+    } catch(e) { Logger.log('SP500 error: ' + e); }
+  }
 
   var ctx = {
     btc_regime: isLondonGoldB ? 'LONDON' : (btcBull ? 'BULL' : 'BEAR'),
