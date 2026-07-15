@@ -327,7 +327,7 @@ function sendTelegram(signals, ts, ctx) {
     text += 'SL='+SL_M+'×ATR · TP='+TP_M+'×ATR · Risk $'+RISK+'/trade';
   } else {
     var goldLine = ctx.g_price
-      ? '\nGold $'+Math.round(ctx.g_price).toLocaleString()+' RSI '+Number(ctx.g_rsi).toFixed(0)
+      ? '\nGold $'+Math.round(ctx.g_price).toLocaleString()+' RSI '+Number(ctx.g_rsi).toFixed(0)+' | '+(ctx.g_trend||'?')+' | VWAP '+(ctx.g_vd!=null?(ctx.g_vd*100).toFixed(2)+'%':'?')
       : '';
     text  = '⏳ *No signal — '+ts+'*\n';
     text += bIcon+' BTC $'+Math.round(ctx.btc_price||0).toLocaleString();
