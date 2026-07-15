@@ -112,7 +112,8 @@ def notify(signals, now_utc, context=None):
             tp_pct = abs(tp-price)/price*100
             rsi_str = f"{s['rsi_prev']:.1f}→{s['rsi']:.1f}"
             vr_str  = f" Vol:{s['vol_ratio']:.1f}x" if s.get('vol_ratio') else ''
-            push_title = f"{'\U0001f534 SHORT' if side=='SHORT' else '\U0001f7e2 LONG'} {sym}"
+            _icon = '\U0001f534 SHORT' if side == 'SHORT' else '\U0001f7e2 LONG'
+            push_title = f"{_icon} {sym}"
             push_body  = (f"Entry ${price:.4f} | SL ${sl:.4f} ({sl_pct:.1f}%) | "
                           f"TP ${tp:.4f} ({tp_pct:.1f}%) | RSI {rsi_str}{vr_str}")
             send_push(push_title, push_body, priority='high')
@@ -134,9 +135,10 @@ def notify(signals, now_utc, context=None):
               <td style="padding:8px">{s['vwap_dev']*100:+.2f}%</td>
               <td style="padding:8px;font-size:11px;color:#555">{s.get('note','')}</td>
             </tr>"""
+        _btc_icon = '\U0001f7e2 BULL' if btc_regime == 'BULL' else '\U0001f534 BEAR'
         html = f"""<html><body style="font-family:monospace;background:#111;color:#eee;padding:20px">
         <h2 style="color:#ffcc00">\U0001f6a8 Scanner Signal — {ts}</h2>
-        <p>BTC: <b>{'\U0001f7e2 BULL' if btc_regime=='BULL' else '\U0001f534 BEAR'}</b>
+        <p>BTC: <b>{_btc_icon}</b>
            ${btc_price:,.0f} vs EMA200 ${btc_ema200:,.0f}</p>
         <table border="0" cellspacing="0" style="background:#222;border-radius:6px;width:100%">
           <tr style="background:#333;color:#aaa;font-size:12px">
@@ -158,9 +160,10 @@ def notify(signals, now_utc, context=None):
 
     else:
         gold_line = f' | Gold ${g_price:,.0f} RSI={g_rsi:.0f}' if g_price else ''
-        push_body = (f"BTC {'\U0001f7e2BULL' if btc_regime=='BULL' else '\U0001f534BEAR'} "
-                     f"${btc_price:,.0f} EMA200 ${btc_ema200:,.0f}{gold_line} | "
-                     f"{'LONG' if btc_regime=='BULL' else 'SHORT'} mode")
+        _btc_tag = '\U0001f7e2BULL' if btc_regime == 'BULL' else '\U0001f534BEAR'
+        _mode    = 'LONG' if btc_regime == 'BULL' else 'SHORT'
+        push_body = (f"BTC {_btc_tag} ${btc_price:,.0f} EMA200 ${btc_ema200:,.0f}"
+                     f"{gold_line} | {_mode} mode")
         send_push(f'⏳ No signal — {ts}', push_body)
         print(f'  \U0001f4f2  Push sent (no signal)')
 
