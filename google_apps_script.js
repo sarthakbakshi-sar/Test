@@ -6,12 +6,15 @@
 //  1. Paste this into your Google Sheet → Extensions → Apps Script
 //  2. Run setupTrigger() from the Run menu → authorise when prompted
 //
-//  Runs every 30 min, Mon–Fri 13:30–24:00 UTC automatically.
-//  Logs every scan to the sheet. Sends Telegram every run.
+//  Sessions:
+//   London  07:00–13:30 UTC  → Gold Strategy B only (71.4% OOS WR)
+//   NY      13:30–24:00 UTC  → Alts + Gold A + Gold B
+//  Logs every scan. Sends Telegram every run.
 // ─────────────────────────────────────────────────────────────
 
 var SL_M = 1.5, TP_M = 2.5, RISK = 200;
-var SESSION_START = 13.5; // 13:30 UTC
+var LONDON_START  = 7.0;  // 07:00 UTC — gold B London
+var SESSION_START = 13.5; // 13:30 UTC — alts + gold A + gold B NY
 
 var ALL_TOKENS = [
   'DOT-USDT','APT-USDT','SUI-USDT','LINK-USDT','ENA-USDT',
@@ -40,97 +43,111 @@ function runScanner() {
   var ts     = Utilities.formatDate(now, 'UTC', 'yyyy-MM-dd HH:mm') + ' UTC';
 
   if (wday === 0 || wday === 6) { Logger.log('Weekend — skip'); return; }
-  if (hour < SESSION_START)     { Logger.log('Pre-session — skip'); return; }
 
-  Logger.log('=== SCAN ' + ts + ' ===');
+  var isFullSession  = hour >= SESSION_START;           // 13:30+ → alts + gold A + gold B
+  var isLondonGoldB  = hour >= LONDON_START && !isFullSession; // 07:00–13:30 → gold B only
 
-  // BTC regime
-  var btcDf = fetchOKX('BTC-USDT', 220);
-  if (!btcDf) { Logger.log('BTC fetch failed'); return; }
-  calcIndicators(btcDf);
-  var btcEma200 = calcEMA(btcDf.c, 200);
-  var btcPrice  = last(btcDf.c);
-  var btcE200   = last(btcEma200);
-  var btcBull   = btcPrice > btcE200;
-  Logger.log('BTC ' + (btcBull ? 'BULL' : 'BEAR') + ' $' + Math.round(btcPrice) + ' EMA200 $' + Math.round(btcE200));
+  if (!isFullSession && !isLondonGoldB) { Logger.log('Pre-session — skip'); return; }
 
+  Logger.log('=== SCAN ' + ts + (isLondonGoldB ? ' [London — Gold B only]' : '') + ' ===');
+
+  var btcBull = false, btcPrice = 0, btcE200 = 0;
   var signals = [];
 
-  // Scan alts
-  for (var i = 0; i < ALL_TOKENS.length; i++) {
-    var sym = ALL_TOKENS[i];
-    try {
-      var df = fetchOKX(sym, 150);
-      if (!df) continue;
-      calcIndicators(df);
-      var n     = df.c.length;
-      var rsi   = df.rsi[n-1],   rsiP  = df.rsi[n-2];
-      var vd    = df.vd[n-1];
-      var atr   = df.atr[n-1],   avg   = df.atrAvg[n-1];
-      var price = df.c[n-1],     high  = df.h[n-1];
-      var vol   = df.vol[n-1],   vavg  = df.volAvg[n-1];
-      var res12 = df.res12[n-1];
-      var ab    = df.ema20[n-1] > df.ema50[n-1];
+  if (isFullSession) {
+    // BTC regime (only needed for alts, full session)
+    var btcDf = fetchOKX('BTC-USDT', 220);
+    if (!btcDf) { Logger.log('BTC fetch failed'); return; }
+    calcIndicators(btcDf);
+    var btcEma200 = calcEMA(btcDf.c, 200);
+    btcPrice = last(btcDf.c);
+    btcE200  = last(btcEma200);
+    btcBull  = btcPrice > btcE200;
+    Logger.log('BTC ' + (btcBull ? 'BULL' : 'BEAR') + ' $' + Math.round(btcPrice) + ' EMA200 $' + Math.round(btcE200));
 
-      if (!isFinite(atr) || !isFinite(avg) || avg === 0) continue;
-      if (atr / avg < 0.5 || atr / avg > 1.8) continue;
-      var vr   = vavg > 0 ? vol / vavg : 0;
-      var slL  = price - SL_M * atr, tpL = price + TP_M * atr;
-      var slS  = price + SL_M * atr, tpS = price - TP_M * atr;
+    // Scan alts
+    for (var i = 0; i < ALL_TOKENS.length; i++) {
+      var sym = ALL_TOKENS[i];
+      try {
+        var df = fetchOKX(sym, 150);
+        if (!df) continue;
+        calcIndicators(df);
+        var n     = df.c.length;
+        var rsi   = df.rsi[n-1],   rsiP  = df.rsi[n-2];
+        var vd    = df.vd[n-1];
+        var atr   = df.atr[n-1],   avg   = df.atrAvg[n-1];
+        var price = df.c[n-1],     high  = df.h[n-1];
+        var vol   = df.vol[n-1],   vavg  = df.volAvg[n-1];
+        var res12 = df.res12[n-1];
+        var ab    = df.ema20[n-1] > df.ema50[n-1];
 
-      if (!btcBull && vd >= 0.018 && vd <= 0.03 && rsiP >= 58 && rsiP <= 72 && rsi < rsiP) {
-        signals.push({sym:sym, side:'SHORT', price:price, sl:slS, tp:tpS,
-                      rsi:rsi, rsi_prev:rsiP, vwap_dev:vd, vol_ratio:vr,
-                      note:'BTC BEAR | VWAP fade | 55.4% WR'});
-      }
-      if (btcBull && ab && res12 !== null && high > res12
-          && vr >= 1.5 && vr <= 3.0 && rsi >= 50 && rsi <= 58 && vd >= 0 && vd <= 0.005) {
-        signals.push({sym:sym, side:'LONG', price:price, sl:slL, tp:tpL,
-                      rsi:rsi, rsi_prev:rsiP, vwap_dev:vd, vol_ratio:vr,
-                      note:'BTC BULL | 12H breakout | 52.5% WR'});
-      }
-      Utilities.sleep(100);
-    } catch(e) { Logger.log(sym + ': ' + e); }
+        if (!isFinite(atr) || !isFinite(avg) || avg === 0) continue;
+        if (atr / avg < 0.5 || atr / avg > 1.8) continue;
+        var vr   = vavg > 0 ? vol / vavg : 0;
+        var slL  = price - SL_M * atr, tpL = price + TP_M * atr;
+        var slS  = price + SL_M * atr, tpS = price - TP_M * atr;
+
+        if (!btcBull && vd >= 0.018 && vd <= 0.03 && rsiP >= 58 && rsiP <= 72 && rsi < rsiP) {
+          signals.push({sym:sym, side:'SHORT', price:price, sl:slS, tp:tpS,
+                        rsi:rsi, rsi_prev:rsiP, vwap_dev:vd, vol_ratio:vr,
+                        note:'BTC BEAR | VWAP fade | 55.4% WR'});
+        }
+        if (btcBull && ab && res12 !== null && high > res12
+            && vr >= 1.5 && vr <= 3.0 && rsi >= 50 && rsi <= 58 && vd >= 0 && vd <= 0.005) {
+          signals.push({sym:sym, side:'LONG', price:price, sl:slL, tp:tpL,
+                        rsi:rsi, rsi_prev:rsiP, vwap_dev:vd, vol_ratio:vr,
+                        note:'BTC BULL | 12H breakout | 52.5% WR'});
+        }
+        Utilities.sleep(100);
+      } catch(e) { Logger.log(sym + ': ' + e); }
+    }
   }
 
-  // Gold
+  // Gold — runs in both London (B only) and NY (A + B)
   var gCtx = {};
   try {
     var dfg = fetchYahoo('GC=F');
     if (dfg) {
       calcIndicators(dfg);
-      var ng     = dfg.c.length;
+      var ng      = dfg.c.length;
       var gEma200 = calcEMA(dfg.c, 200);
       var gBull200 = dfg.c[ng-1] > gEma200[ng-1];
-      var gRsi   = dfg.rsi[ng-1], gRsiP = dfg.rsi[ng-2];
-      var gVd    = dfg.vd[ng-1];
-      var gAtr   = dfg.atr[ng-1], gAvg = dfg.atrAvg[ng-1];
-      var gAb    = dfg.ema20[ng-1] > dfg.ema50[ng-1];
-      var gRes12 = dfg.res12[ng-1], gHigh = dfg.h[ng-1];
-      var gVol   = dfg.vol[ng-1],  gVavg = dfg.volAvg[ng-1];
-      var gPrice = dfg.c[ng-1],    gVr   = gVavg > 0 ? gVol / gVavg : 0;
+      var gRsi    = dfg.rsi[ng-1], gRsiP = dfg.rsi[ng-2];
+      var gVd     = dfg.vd[ng-1];
+      var gAtr    = dfg.atr[ng-1], gAvg = dfg.atrAvg[ng-1];
+      var gAb     = dfg.ema20[ng-1] > dfg.ema50[ng-1];
+      var gRes12  = dfg.res12[ng-1], gHigh = dfg.h[ng-1];
+      var gVol    = dfg.vol[ng-1],  gVavg = dfg.volAvg[ng-1];
+      var gPrice  = dfg.c[ng-1],    gVr   = gVavg > 0 ? gVol / gVavg : 0;
       gCtx = {g_price:gPrice, g_rsi:gRsi, g_vd:gVd, g_trend: gAb ? 'uptrend' : 'downtrend'};
       Logger.log('GOLD $' + gPrice.toFixed(1) + ' RSI=' + gRsi.toFixed(1) + ' VWAP=' + (gVd*100).toFixed(2) + '% ' + gCtx.g_trend);
 
       var gAtrOk = isFinite(gAtr) && isFinite(gAvg) && gAvg > 0 && gAtr/gAvg >= 0.5 && gAtr/gAvg <= 1.8;
       if (gAtrOk) {
         var gSl = gPrice - SL_M*gAtr, gTp = gPrice + TP_M*gAtr;
-        if (gAb && gRsiP <= 35 && gRsi > gRsiP && gVd <= -0.005) {
+        // Strategy A: NY session only (uptrend + RSI ≤35 bounce + VWAP ≤-0.5%)
+        if (isFullSession && gAb && gRsiP <= 35 && gRsi > gRsiP && gVd <= -0.005) {
           signals.push({sym:'GOLD', side:'LONG', price:gPrice, sl:gSl, tp:gTp,
                         rsi:gRsi, rsi_prev:gRsiP, vwap_dev:gVd, vol_ratio:0,
-                        note:'Gold VWAP pullback | 58.3% WR'});
+                        note:'Gold A: VWAP pullback | 78.6% WR'});
         }
+        // Strategy B: London + NY (bull200 + uptrend + 12H break + vol + RSI 50-62)
         if (gBull200 && gAb && gRes12 !== null && gHigh > gRes12
             && gVr >= 1.5 && gVr <= 3.0 && gRsi >= 50 && gRsi <= 62 && gVd >= 0 && gVd <= 0.008) {
+          var session = isLondonGoldB ? 'London' : 'NY';
           signals.push({sym:'GOLD', side:'LONG', price:gPrice, sl:gSl, tp:gTp,
                         rsi:gRsi, rsi_prev:gRsiP, vwap_dev:gVd, vol_ratio:gVr,
-                        note:'Gold breakout | 58.3% WR'});
+                        note:'Gold B: Breakout [' + session + '] | 55-71% WR'});
         }
       }
     }
   } catch(e) { Logger.log('GOLD error: ' + e); }
 
-  var ctx = {btc_regime: btcBull ? 'BULL' : 'BEAR', btc_price: btcPrice, btc_ema200: btcE200};
+  var ctx = {
+    btc_regime: isLondonGoldB ? 'LONDON' : (btcBull ? 'BULL' : 'BEAR'),
+    btc_price:  btcPrice,
+    btc_ema200: btcE200
+  };
   for (var k in gCtx) ctx[k] = gCtx[k];
 
   logToSheet(signals, ts, ctx);
@@ -305,13 +322,17 @@ function sendTelegram(signals, ts, ctx) {
   ctx     = ctx     || {};
   signals = signals || [];
 
-  var bull  = ctx.btc_regime === 'BULL';
-  var bIcon = bull ? '🟢' : '🔴';
+  var bull    = ctx.btc_regime === 'BULL';
+  var london  = ctx.btc_regime === 'LONDON';
+  var bIcon   = london ? '🌍' : (bull ? '🟢' : '🔴');
+  var btcLine = london
+    ? bIcon + ' London session (BTC regime not checked)\n\n'
+    : bIcon + ' BTC ' + (ctx.btc_regime||'') + ' $' + Math.round(ctx.btc_price||0).toLocaleString() + '\n\n';
   var text;
 
   if (signals.length > 0) {
     text  = '🚨 *SIGNAL — ' + ts + '*\n';
-    text += bIcon + ' BTC ' + (ctx.btc_regime||'') + ' $' + Math.round(ctx.btc_price||0).toLocaleString() + '\n\n';
+    text += btcLine;
     signals.forEach(function(s){
       var icon  = s.side==='SHORT' ? '🔴' : '🟢';
       var slP   = (Math.abs(s.price-s.sl)/s.price*100).toFixed(1);
@@ -330,9 +351,14 @@ function sendTelegram(signals, ts, ctx) {
       ? '\nGold $'+Math.round(ctx.g_price).toLocaleString()+' RSI '+Number(ctx.g_rsi).toFixed(0)+' | '+(ctx.g_trend||'?')+' | VWAP '+(ctx.g_vd!=null?(ctx.g_vd*100).toFixed(2)+'%':'?')
       : '';
     text  = '⏳ *No signal — '+ts+'*\n';
-    text += bIcon+' BTC $'+Math.round(ctx.btc_price||0).toLocaleString();
-    text += ' vs EMA200 $'+Math.round(ctx.btc_ema200||0).toLocaleString();
-    text += goldLine+'\n'+(bull ? 'LONG mode' : 'SHORT mode');
+    if (london) {
+      text += bIcon + ' London session — Gold B scan only';
+    } else {
+      text += bIcon+' BTC $'+Math.round(ctx.btc_price||0).toLocaleString();
+      text += ' vs EMA200 $'+Math.round(ctx.btc_ema200||0).toLocaleString();
+      text += '\n'+(bull ? 'LONG mode' : 'SHORT mode');
+    }
+    text += goldLine;
   }
 
   UrlFetchApp.fetch('https://api.telegram.org/bot'+token+'/sendMessage', {
