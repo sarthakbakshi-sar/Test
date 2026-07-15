@@ -21,8 +21,5 @@ jobs:
 
       - name: Run scanner
         env:
-          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          GMAIL_TO:           ${{ secrets.GMAIL_TO }}
-          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python altcoin_scanner.py
