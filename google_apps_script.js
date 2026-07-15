@@ -2,10 +2,9 @@
 //  Trading Scanner — Pure Google Apps Script
 //  No Python, no GitHub Actions, no server needed.
 //
-//  SETUP (3 steps, do once):
+//  SETUP (2 steps, do once):
 //  1. Paste this into your Google Sheet → Extensions → Apps Script
 //  2. Run setupTrigger() from the Run menu → authorise when prompted
-//  3. Project Settings → Script Properties → add TG_TOKEN and TG_CHAT_ID
 //
 //  Runs every 30 min, Mon–Fri 13:30–24:00 UTC automatically.
 //  Logs every scan to the sheet. Sends Telegram every run.
@@ -301,18 +300,18 @@ function logToSheet(signals, ts, ctx) {
 // ── telegram ───────────────────────────────────────────────────
 
 function sendTelegram(signals, ts, ctx) {
-  var props  = PropertiesService.getScriptProperties();
-  var token  = props.getProperty('TG_TOKEN');
-  var chatId = props.getProperty('TG_CHAT_ID');
-  if (!token || !chatId) { Logger.log('TG creds missing'); return; }
+  var token  = '8601364508:AAGn9nHsjkvc6UfS6hiRSQ_uL-5VTJPncZc';
+  var chatId = '1346945081';
+  ctx     = ctx     || {};
+  signals = signals || [];
 
-  var bull   = ctx.btc_regime === 'BULL';
-  var bIcon  = bull ? '🟢' : '🔴';
+  var bull  = ctx.btc_regime === 'BULL';
+  var bIcon = bull ? '🟢' : '🔴';
   var text;
 
   if (signals.length > 0) {
     text  = '🚨 *SIGNAL — ' + ts + '*\n';
-    text += bIcon + ' BTC ' + ctx.btc_regime + ' $' + Math.round(ctx.btc_price).toLocaleString() + '\n\n';
+    text += bIcon + ' BTC ' + (ctx.btc_regime||'') + ' $' + Math.round(ctx.btc_price||0).toLocaleString() + '\n\n';
     signals.forEach(function(s){
       var icon  = s.side==='SHORT' ? '🔴' : '🟢';
       var slP   = (Math.abs(s.price-s.sl)/s.price*100).toFixed(1);
@@ -331,8 +330,8 @@ function sendTelegram(signals, ts, ctx) {
       ? '\nGold $'+Math.round(ctx.g_price).toLocaleString()+' RSI '+Number(ctx.g_rsi).toFixed(0)
       : '';
     text  = '⏳ *No signal — '+ts+'*\n';
-    text += bIcon+' BTC $'+Math.round(ctx.btc_price).toLocaleString();
-    text += ' vs EMA200 $'+Math.round(ctx.btc_ema200).toLocaleString();
+    text += bIcon+' BTC $'+Math.round(ctx.btc_price||0).toLocaleString();
+    text += ' vs EMA200 $'+Math.round(ctx.btc_ema200||0).toLocaleString();
     text += goldLine+'\n'+(bull ? 'LONG mode' : 'SHORT mode');
   }
 
