@@ -16,13 +16,16 @@ from datetime import datetime, timedelta, timezone
 INITIAL_CAPITAL  = 840.0
 RISK_PCT         = 1.0          # % of equity per trade
 RR               = 3.0          # reward / risk
-PIVOT_LEFT       = 2
-PIVOT_RIGHT      = 2
-RETEST_BARS      = 5
-RETEST_TOL_PCT   = 0.05 / 100
-MAX_TRADES_DAY   = 2
+PIVOT_LEFT       = 5            # larger lookback → meaningful structure only
+PIVOT_RIGHT      = 5
+RETEST_BARS      = 10
+RETEST_TOL_PCT   = 0.10 / 100  # 0.10% zone around the level
+MIN_RISK_PCT     = 0.15 / 100  # skip if SL is < 0.15% from entry
+MAX_TRADES_DAY   = 1            # quality over quantity
 COOLDOWN_BARS    = 30
 USE_15M_TREND    = True
+SESSION_START_H  = 7            # UTC hour: London open
+SESSION_END_H    = 21           # UTC hour: NY afternoon
 COMMISSION_PCT   = 0.055 / 100  # per side
 DAYS_BACK_15M    = 59           # yfinance 15m limit ≈ 60 days
 DAYS_BACK_1M     = 28           # yfinance 1m limit ≈ 30 days
@@ -133,10 +136,10 @@ def backtest(df):
     df: 1M OHLC aligned with bull15/bear15 columns.
     Returns list of trade dicts.
     """
-    op = df["open"].values
-    hi = df["high"].values
-    lo = df["low"].values
-    cl = df["close"].values
+    op  = df["open"].values
+    hi  = df["high"].values
+    lo  = df["low"].values
+    cl  = df["close"].values
     bull15 = df["bull15"].values.astype(bool)
     bear15 = df["bear15"].values.astype(bool)
     dates  = df.index
@@ -167,11 +170,15 @@ def backtest(df):
 
     for i in range(N):
         bar_date = dates[i].date()
+        bar_hour = dates[i].hour
 
         # New day reset
         if bar_date != last_date:
             tradesToday = 0
             last_date   = bar_date
+
+        # Session filter
+        in_session = (SESSION_START_H <= bar_hour < SESSION_END_H)
 
         # Update 1M pivots
         if not np.isnan(ph1[i]):
@@ -238,17 +245,19 @@ def backtest(df):
         if waitingShort and (i - shortBreakBar) > RETEST_BARS: waitingShort = False
 
         # ── Retest detection ─────────────────────────────────────────────────
-        can_trade = (tradesToday < MAX_TRADES_DAY and i > cooldown_until)
+        can_trade = (tradesToday < MAX_TRADES_DAY and i > cooldown_until
+                     and in_session)
 
         if waitingLong and can_trade:
             lu = longLevel * (1 + RETEST_TOL_PCT)
             ll = longLevel * (1 - RETEST_TOL_PCT)
             long_retest = (lo[i] <= lu and hi[i] >= ll and cl[i] >= longLevel)
+            bullish_bar = cl[i] > op[i]                  # confirmation candle
             valid_sl    = (not np.isnan(longSL_level) and longSL_level < cl[i])
 
-            if long_retest and valid_sl and (not USE_15M_TREND or bull15[i]):
-                risk     = cl[i] - longSL_level
-                if risk > 0:
+            if long_retest and bullish_bar and valid_sl and (not USE_15M_TREND or bull15[i]):
+                risk = cl[i] - longSL_level
+                if risk > 0 and risk / cl[i] >= MIN_RISK_PCT:
                     risk_cash  = equity * RISK_PCT / 100
                     pos_size   = risk_cash / risk
                     entry_price= cl[i]
@@ -263,11 +272,12 @@ def backtest(df):
             su = shortLevel * (1 + RETEST_TOL_PCT)
             sl_ = shortLevel * (1 - RETEST_TOL_PCT)
             short_retest = (hi[i] >= sl_ and lo[i] <= su and cl[i] <= shortLevel)
+            bearish_bar  = cl[i] < op[i]                 # confirmation candle
             valid_sl     = (not np.isnan(shortSL_level) and shortSL_level > cl[i])
 
-            if short_retest and valid_sl and (not USE_15M_TREND or bear15[i]):
-                risk     = shortSL_level - cl[i]
-                if risk > 0:
+            if short_retest and bearish_bar and valid_sl and (not USE_15M_TREND or bear15[i]):
+                risk = shortSL_level - cl[i]
+                if risk > 0 and risk / cl[i] >= MIN_RISK_PCT:
                     risk_cash  = equity * RISK_PCT / 100
                     pos_size   = risk_cash / risk
                     entry_price= cl[i]
