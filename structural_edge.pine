@@ -1,0 +1,1236 @@
+//@version=6
+indicator("Structural Edge [SE]", overlay=true,
+          max_labels_count=500, max_lines_count=500, max_boxes_count=200,
+          max_bars_back=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USER-DEFINED TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type FVGLevel
+    float top    = na
+    float bot    = na
+    float mid    = na
+    bool  filled = false
+    int   bar    = 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Preset ───────────────────────────────────────────────────────────────────
+i_preset = input.string("BTC Scalp", "Preset",
+    options=["BTC Scalp", "Breakout", "Liq Reversal", "Pure Structure"],
+    tooltip="Quick-start config. Override any individual setting below.",
+    group="⚙️  PRESET")
+
+// ── Timeframes ────────────────────────────────────────────────────────────────
+i_htf       = input.timeframe("60", "Higher Timeframe",       group="⏱  TIMEFRAMES")
+i_single_tf = input.bool(false,     "Single Timeframe Mode",  group="⏱  TIMEFRAMES",
+    tooltip="Use only the chart timeframe for all calculations.")
+
+// ── Anti-repaint ──────────────────────────────────────────────────────────────
+i_strict_nrp = input.bool(true, "Strict Non-Repainting Mode", group="🔒  ANTI-REPAINT",
+    tooltip="ON: all HTF data uses confirmed (closed) bars only. Signals will not move on history.")
+
+// ── Market Structure ──────────────────────────────────────────────────────────
+i_pivot_len   = input.int(2,          "Pivot Length (bars each side)", minval=1, maxval=20, group="📊  MARKET STRUCTURE")
+i_struct_mode = input.string("Standard", "Structure Mode",
+    options=["Strict","Standard","Loose"], group="📊  MARKET STRUCTURE")
+i_show_struct = input.bool(true,  "Show HH/HL/LH/LL Labels",   group="📊  MARKET STRUCTURE")
+i_show_bos    = input.bool(true,  "Show BOS Labels",           group="📊  MARKET STRUCTURE")
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+i_sess_filter = input.string("London + NY", "Active Trading Sessions",
+    options=["All","Asia","London","New York","London + NY"], group="🕐  SESSIONS")
+i_show_sess_bg = input.bool(true, "Session Background Colors", group="🕐  SESSIONS")
+i_show_sess_hl = input.bool(true, "Session High/Low Lines",    group="🕐  SESSIONS")
+
+// ── Key Levels ────────────────────────────────────────────────────────────────
+i_show_pdhl  = input.bool(true,  "Previous Day High/Low",     group="🔑  KEY LEVELS")
+i_show_pwhl  = input.bool(false, "Previous Week High/Low",    group="🔑  KEY LEVELS")
+i_show_eq    = input.bool(true,  "Equal Highs/Lows",          group="🔑  KEY LEVELS")
+i_eq_tol     = input.float(0.05, "Equal Level Tolerance %",
+    minval=0.01, maxval=0.50, step=0.01, group="🔑  KEY LEVELS") / 100
+
+// ── Liquidity ─────────────────────────────────────────────────────────────────
+i_liq_on     = input.bool(true,  "Liquidity Engine",          group="💧  LIQUIDITY")
+i_sweep_tol  = input.float(0.10, "Sweep Tolerance %",
+    minval=0.00, maxval=0.50, step=0.01, group="💧  LIQUIDITY") / 100
+i_sweep_bars = input.int(3, "Max Bars: Sweep → Reclaim", minval=1, maxval=20, group="💧  LIQUIDITY")
+i_show_liq   = input.bool(true,  "Show Liquidity Level Lines", group="💧  LIQUIDITY")
+
+// ── Breakout ──────────────────────────────────────────────────────────────────
+i_bo_on      = input.bool(true,  "Breakout Engine",           group="🚀  BREAKOUT")
+i_bo_src     = input.string("All", "Breakout Source",
+    options=["Session Level","Swing Level","Range Level","Prev Day","All"], group="🚀  BREAKOUT")
+
+// ── Displacement ──────────────────────────────────────────────────────────────
+i_disp_on    = input.bool(true,   "Displacement Filter",       group="📏  DISPLACEMENT")
+i_disp_ratio = input.float(0.75,  "Min Body/ATR Ratio",        minval=0.10, maxval=3.00, step=0.05, group="📏  DISPLACEMENT")
+i_disp_close = input.float(70.0,  "Min Close Location %",      minval=30.0, maxval=100.0, step=5.0,  group="📏  DISPLACEMENT")
+
+// ── Volume ────────────────────────────────────────────────────────────────────
+i_vol_mode   = input.string("Confirmation", "Volume Filter",
+    options=["Off","Confirmation","Required"], group="📊  VOLUME")
+i_vol_len    = input.int(20,    "Volume SMA Period",  minval=5, maxval=100, group="📊  VOLUME")
+i_vol_ratio  = input.float(1.2, "Min Volume Ratio",  minval=0.5, maxval=5.0, step=0.1, group="📊  VOLUME")
+
+// ── Volatility ────────────────────────────────────────────────────────────────
+i_atr_len    = input.int(14,    "ATR Period",            minval=1,  maxval=50,  group="📉  VOLATILITY")
+i_vol_filter = input.string("Reject Extreme Low", "Volatility Filter",
+    options=["Off","Reject Extreme Low","Reject Extreme High","Reject Both"], group="📉  VOLATILITY")
+i_atr_hist   = input.int(100,   "ATR Historical Period", minval=20, maxval=500, group="📉  VOLATILITY")
+
+// ── Trend Filter ──────────────────────────────────────────────────────────────
+i_trend_mode = input.string("Market Structure", "Trend Filter",
+    options=["None","EMA 20/50","EMA 50/200","Market Structure","VWAP"], group="📈  TREND")
+i_ema_fast   = input.int(20,  "EMA Fast", minval=5,  maxval=200, group="📈  TREND")
+i_ema_slow   = input.int(50,  "EMA Slow", minval=10, maxval=500, group="📈  TREND")
+
+// ── RSI ───────────────────────────────────────────────────────────────────────
+i_rsi_mode   = input.string("Off", "RSI Filter",
+    options=["Off","Momentum Confirmation","Avoid Extremes"], group="📊  RSI")
+i_rsi_len    = input.int(14, "RSI Length", minval=2, maxval=50, group="📊  RSI")
+i_rsi_bull   = input.int(50, "RSI Bull Min", minval=30, maxval=80, group="📊  RSI")
+i_rsi_bear   = input.int(50, "RSI Bear Max", minval=20, maxval=70, group="📊  RSI")
+
+// ── MACD ──────────────────────────────────────────────────────────────────────
+i_macd_mode  = input.string("Off", "MACD Filter",
+    options=["Off","Histogram Direction","Line > Signal"], group="📊  MACD")
+i_macd_fast  = input.int(12, "Fast",   minval=2, maxval=50,  group="📊  MACD")
+i_macd_slow  = input.int(26, "Slow",   minval=5, maxval=200, group="📊  MACD")
+i_macd_sig   = input.int(9,  "Signal", minval=2, maxval=50,  group="📊  MACD")
+
+// ── VWAP ──────────────────────────────────────────────────────────────────────
+i_vwap_mode  = input.string("Off", "VWAP Filter", options=["Off","Required"], group="📊  VWAP")
+i_show_vwap  = input.bool(false, "Plot VWAP", group="📊  VWAP")
+
+// ── Fibonacci ─────────────────────────────────────────────────────────────────
+i_fib_on     = input.bool(false, "Fibonacci Zone Filter", group="📐  FIBONACCI",
+    tooltip="Only enter if price is at a Fibonacci retracement level of the last confirmed swing.")
+i_fib_zones  = input.string("0.618 + 0.705 + 0.786", "Fib Zones",
+    options=["0.618 only","0.618 + 0.705","0.618 + 0.705 + 0.786","0.382 + 0.5 + 0.618"],
+    group="📐  FIBONACCI")
+
+// ── FVG ───────────────────────────────────────────────────────────────────────
+i_fvg_on     = input.bool(false, "FVG Engine",     group="📦  FVG")
+i_fvg_mode   = input.string("FVG Midpoint Retest", "FVG Entry Mode",
+    options=["FVG Creation","FVG Midpoint Retest","Full FVG Retest"], group="📦  FVG")
+i_show_fvg   = input.bool(false, "Show FVG Boxes", group="📦  FVG")
+
+// ── Entry Model ───────────────────────────────────────────────────────────────
+i_entry_model = input.string("B: Breakout + Retest", "Entry Model",
+    options=["A: Breakout Close",
+             "B: Breakout + Retest",
+             "C: Sweep → BOS → Retest",
+             "D: Sweep → Disp → FVG",
+             "E: Breakout + Vol + Retest"], group="🎯  ENTRY MODEL")
+i_retest_tol  = input.float(0.10, "Retest Tolerance %",
+    minval=0.01, maxval=0.50, step=0.01, group="🎯  ENTRY MODEL") / 100
+i_setup_age   = input.int(10, "Setup Max Age (bars)", minval=1, maxval=100, group="🎯  ENTRY MODEL")
+
+// ── Signal Score ──────────────────────────────────────────────────────────────
+i_min_score  = input.int(8, "Minimum Signal Score (out of 16)",
+    minval=1, maxval=16, group="🎯  SIGNAL SCORE")
+i_show_score = input.bool(true, "Show Score on Label", group="🎯  SIGNAL SCORE")
+
+// ── Stop Loss ─────────────────────────────────────────────────────────────────
+i_sl_method  = input.string("Structure", "SL Method",
+    options=["Structure","Sweep","ATR","Fixed %"], group="🛡  STOP LOSS")
+i_sl_atr_m   = input.float(1.5,  "ATR Multiple", minval=0.5, maxval=5.0, step=0.25, group="🛡  STOP LOSS")
+i_sl_buf     = input.float(0.25, "Buffer (ATR)",  minval=0.0, maxval=1.0, step=0.05, group="🛡  STOP LOSS")
+i_sl_fixed   = input.float(1.0,  "Fixed SL %",    minval=0.1, maxval=10.0, step=0.1, group="🛡  STOP LOSS") / 100
+
+// ── Take Profit ───────────────────────────────────────────────────────────────
+i_tp_method  = input.string("Fixed R:R", "TP Method",
+    options=["Fixed R:R","ATR Target","Structure Target"], group="💰  TAKE PROFIT")
+i_tp1_r      = input.float(1.0, "TP1 (R)", minval=0.25, maxval=10.0, step=0.25, group="💰  TAKE PROFIT")
+i_tp2_r      = input.float(2.0, "TP2 (R)", minval=0.25, maxval=20.0, step=0.25, group="💰  TAKE PROFIT")
+i_tp3_r      = input.float(3.0, "TP3 (R)", minval=0.25, maxval=30.0, step=0.25, group="💰  TAKE PROFIT")
+i_tp4_r      = input.float(5.0, "TP4 (R)", minval=0.25, maxval=50.0, step=0.25, group="💰  TAKE PROFIT")
+i_tp1_exit   = input.int(50, "TP1 Exit %", minval=10, maxval=100, group="💰  TAKE PROFIT")
+i_tp2_exit   = input.int(25, "TP2 Exit %", minval=0,  maxval=100, group="💰  TAKE PROFIT")
+i_tp3_exit   = input.int(15, "TP3 Exit %", minval=0,  maxval=100, group="💰  TAKE PROFIT")
+i_be_on      = input.bool(true, "Move SL to Breakeven After TP1", group="💰  TAKE PROFIT")
+
+// ── Trailing Stop ─────────────────────────────────────────────────────────────
+i_trail_mode = input.string("Off", "Trailing Stop",
+    options=["Off","Breakeven","ATR Trail","Swing Trail"], group="🔄  TRAILING")
+i_trail_atr  = input.float(1.0, "Trail ATR Multiple", minval=0.5, maxval=5.0, step=0.25, group="🔄  TRAILING")
+
+// ── Position Sizing ───────────────────────────────────────────────────────────
+i_account    = input.float(10000.0, "Account Size ($)", minval=100.0,  group="💼  SIZING")
+i_risk_pct   = input.float(0.5,     "Risk Per Trade %", minval=0.1, maxval=5.0, step=0.25, group="💼  SIZING") / 100
+i_max_lev    = input.float(5.0,     "Max Leverage",     minval=1.0, maxval=50.0, step=1.0,  group="💼  SIZING")
+
+// ── Trade Management ──────────────────────────────────────────────────────────
+i_max_day    = input.int(2,  "Max Trades/Day",       minval=1, maxval=10, group="🔄  MANAGEMENT")
+i_max_closs  = input.int(2,  "Max Consecutive Losses", minval=1, maxval=10, group="🔄  MANAGEMENT")
+i_day_loss   = input.float(2.0, "Daily Loss Limit %", minval=0.5, maxval=20.0, step=0.5, group="🔄  MANAGEMENT") / 100
+i_cooldown   = input.int(10, "Cooldown Bars",         minval=1, maxval=200, group="🔄  MANAGEMENT")
+
+// ── Visual ────────────────────────────────────────────────────────────────────
+i_show_dash  = input.bool(true,  "Show Dashboard",         group="🎨  VISUAL")
+i_show_tpsl  = input.bool(true,  "Show SL/TP Lines",       group="🎨  VISUAL")
+i_show_kl    = input.bool(true,  "Show Key Level Lines",   group="🎨  VISUAL")
+c_bull       = input.color(color.new(#26a69a, 0), "Bull Color",    group="🎨  VISUAL")
+c_bear       = input.color(color.new(#ef5350, 0), "Bear Color",    group="🎨  VISUAL")
+c_neutral    = input.color(color.new(#9e9e9e, 0), "Neutral Color", group="🎨  VISUAL")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FUNCTION DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Compute TP price given entry, sl, r-multiple, direction
+f_tp(entry, sl, r, is_long) =>
+    risk = math.abs(entry - sl)
+    is_long ? entry + risk * r : entry - risk * r
+
+// SL for long
+f_sl_long(last_pl_price, sweep_low, atr_val, entry_price) =>
+    buf = atr_val * i_sl_buf
+    switch i_sl_method
+        "Structure" => na(last_pl_price) ? entry_price * (1 - i_sl_fixed) : last_pl_price - buf
+        "Sweep"     => na(sweep_low)     ? (na(last_pl_price) ? entry_price * (1 - i_sl_fixed) : last_pl_price - buf) : sweep_low - buf
+        "ATR"       => entry_price - atr_val * i_sl_atr_m
+        =>             entry_price * (1 - i_sl_fixed)
+
+// SL for short
+f_sl_short(last_ph_price, sweep_high, atr_val, entry_price) =>
+    buf = atr_val * i_sl_buf
+    switch i_sl_method
+        "Structure" => na(last_ph_price) ? entry_price * (1 + i_sl_fixed) : last_ph_price + buf
+        "Sweep"     => na(sweep_high)    ? (na(last_ph_price) ? entry_price * (1 + i_sl_fixed) : last_ph_price + buf) : sweep_high + buf
+        "ATR"       => entry_price + atr_val * i_sl_atr_m
+        =>             entry_price * (1 + i_sl_fixed)
+
+// Dashboard cell helper
+f_cell(t, r, lbl, val, vc) =>
+    table.cell(t, 0, r, lbl, text_color=color.new(color.silver, 20),
+        text_size=size.small, text_halign=text.align_left,
+        bgcolor=color.new(color.black, 72))
+    table.cell(t, 1, r, val, text_color=vc,
+        text_size=size.small, text_halign=text.align_right,
+        bgcolor=color.new(color.black, 60))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INDICATORS (current TF)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atr_val      = ta.atr(i_atr_len)
+atr_hist_avg = ta.sma(atr_val, i_atr_hist)
+vol_sma      = ta.sma(volume, i_vol_len)
+vol_ratio    = na(vol_sma) or vol_sma == 0 ? 0.0 : volume / vol_sma
+ema_fast_val = ta.ema(close, i_ema_fast)
+ema_slow_val = ta.ema(close, i_ema_slow)
+rsi_val      = ta.rsi(close, i_rsi_len)
+[macd_line, macd_sig_line, macd_hist] = ta.macd(close, i_macd_fast, i_macd_slow, i_macd_sig)
+vwap_val     = ta.vwap(hlc3)
+
+// Session detection (UTC hour-based)
+bar_hour  = hour(time, "UTC")
+bar_min   = minute(time, "UTC")
+is_asia   = bar_hour >= 0  and bar_hour < 9
+is_london = bar_hour >= 7  and bar_hour < 16
+is_ny     = bar_hour >= 13 and bar_hour < 22
+is_ny_open = bar_hour == 13 and bar_min >= 30 or bar_hour == 14 and bar_min <= 30
+
+in_session = switch i_sess_filter
+    "Asia"        => is_asia
+    "London"      => is_london
+    "New York"    => is_ny
+    "London + NY" => is_london or is_ny
+    =>               true
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTF DATA — Non-Repainting
+// When strict mode ON: always use [1] offset + lookahead_on to get the last
+// fully-closed HTF bar. This means HTF data lags by one HTF candle, which is
+// the only honest way to avoid repaint on history.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+htf_tf = i_single_tf ? timeframe.period : i_htf
+
+// Confirmed HTF OHLCV (previous closed bar)
+[htf_c, htf_h, htf_l, htf_o] = request.security(syminfo.tickerid, htf_tf,
+    [close[1], high[1], low[1], open[1]],
+    lookahead = i_strict_nrp ? barmerge.lookahead_on : barmerge.lookahead_off)
+
+// HTF pivots — always use lookahead_off so no future HTF bars are consumed
+htf_ph_raw = request.security(syminfo.tickerid, htf_tf,
+    ta.pivothigh(high, i_pivot_len, i_pivot_len),
+    lookahead=barmerge.lookahead_off)
+
+htf_pl_raw = request.security(syminfo.tickerid, htf_tf,
+    ta.pivotlow(low, i_pivot_len, i_pivot_len),
+    lookahead=barmerge.lookahead_off)
+
+htf_atr = request.security(syminfo.tickerid, htf_tf,
+    ta.atr(i_atr_len)[1], lookahead=barmerge.lookahead_on)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MARKET STRUCTURE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Current TF pivots — ta.pivothigh confirms at bar_index - pivot_len
+ph_raw = ta.pivothigh(high, i_pivot_len, i_pivot_len)
+pl_raw = ta.pivotlow(low,   i_pivot_len, i_pivot_len)
+
+// Lookahead margin for Loose mode
+loose_m = i_struct_mode == "Loose" ? 0.001 : i_struct_mode == "Strict" ? 0.0 : 0.0002
+
+// Current TF structure tracking
+var float last_ph = na
+var float prev_ph = na
+var float last_pl = na
+var float prev_pl = na
+var int   last_ph_bar = 0
+var int   last_pl_bar = 0
+
+if not na(ph_raw)
+    prev_ph     := last_ph
+    last_ph     := ph_raw
+    last_ph_bar := bar_index - i_pivot_len  // actual pivot bar
+
+if not na(pl_raw)
+    prev_pl     := last_pl
+    last_pl     := pl_raw
+    last_pl_bar := bar_index - i_pivot_len
+
+// Structure determination
+is_hh = not na(last_ph) and not na(prev_ph) and last_ph > prev_ph * (1.0 - loose_m)
+is_lh = not na(last_ph) and not na(prev_ph) and last_ph < prev_ph * (1.0 + loose_m)
+is_hl = not na(last_pl) and not na(prev_pl) and last_pl > prev_pl * (1.0 + loose_m)
+is_ll = not na(last_pl) and not na(prev_pl) and last_pl < prev_pl * (1.0 - loose_m)
+
+chart_bull = is_hh and is_hl
+chart_bear = is_lh and is_ll
+
+// BOS — close breaks last confirmed swing
+bos_bull = not na(last_ph) and close > last_ph and close[1] <= last_ph
+bos_bear = not na(last_pl) and close < last_pl and close[1] >= last_pl
+
+// HTF structure tracking
+var float htf_last_ph = na
+var float htf_prev_ph = na
+var float htf_last_pl = na
+var float htf_prev_pl = na
+
+if not na(htf_ph_raw)
+    htf_prev_ph := htf_last_ph
+    htf_last_ph := htf_ph_raw
+
+if not na(htf_pl_raw)
+    htf_prev_pl := htf_last_pl
+    htf_last_pl := htf_pl_raw
+
+htf_bull = not na(htf_last_ph) and not na(htf_prev_ph) and
+           not na(htf_last_pl) and not na(htf_prev_pl) and
+           htf_last_ph > htf_prev_ph and htf_last_pl > htf_prev_pl
+htf_bear = not na(htf_last_ph) and not na(htf_prev_ph) and
+           not na(htf_last_pl) and not na(htf_prev_pl) and
+           htf_last_ph < htf_prev_ph and htf_last_pl < htf_prev_pl
+htf_neutral = not htf_bull and not htf_bear
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KEY LEVELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+is_new_day  = ta.change(time("D")) != 0
+is_new_week = ta.change(time("W")) != 0
+
+// Previous Day High/Low
+var float pdh       = na
+var float pdl       = na
+var float _day_high = na
+var float _day_low  = na
+
+if is_new_day or na(_day_high)
+    if not na(_day_high)
+        pdh := _day_high
+        pdl := _day_low
+    _day_high := high
+    _day_low  := low
+else
+    _day_high := math.max(_day_high, high)
+    _day_low  := math.min(_day_low,  low)
+
+// Previous Week High/Low
+var float pwh       = na
+var float pwl       = na
+var float _wk_high  = na
+var float _wk_low   = na
+
+if is_new_week or na(_wk_high)
+    if not na(_wk_high)
+        pwh := _wk_high
+        pwl := _wk_low
+    _wk_high := high
+    _wk_low  := low
+else
+    _wk_high := math.max(_wk_high, high)
+    _wk_low  := math.min(_wk_low,  low)
+
+// Session highs/lows
+var float _asia_h  = na;  var float _asia_l  = na
+var float _lon_h   = na;  var float _lon_l   = na
+var float _ny_h    = na;  var float _ny_l    = na
+var float asia_high_prev = na;  var float asia_low_prev  = na
+var float lon_high_prev  = na;  var float lon_low_prev   = na
+var float ny_high_prev   = na;  var float ny_low_prev    = na
+
+var bool _asia_was  = false
+var bool _lon_was   = false
+var bool _ny_was    = false
+
+// Asia
+if is_asia
+    _asia_h := na(_asia_h) ? high : math.max(_asia_h, high)
+    _asia_l := na(_asia_l) ? low  : math.min(_asia_l, low)
+    _asia_was := true
+else if _asia_was
+    asia_high_prev := _asia_h
+    asia_low_prev  := _asia_l
+    _asia_h := na;  _asia_l := na
+    _asia_was := false
+
+// London
+if is_london
+    _lon_h := na(_lon_h) ? high : math.max(_lon_h, high)
+    _lon_l := na(_lon_l) ? low  : math.min(_lon_l, low)
+    _lon_was := true
+else if _lon_was
+    lon_high_prev := _lon_h
+    lon_low_prev  := _lon_l
+    _lon_h := na;  _lon_l := na
+    _lon_was := false
+
+// NY
+if is_ny
+    _ny_h := na(_ny_h) ? high : math.max(_ny_h, high)
+    _ny_l := na(_ny_l) ? low  : math.min(_ny_l, low)
+    _ny_was := true
+else if _ny_was
+    ny_high_prev := _ny_h
+    ny_low_prev  := _ny_l
+    _ny_h := na;  _ny_l := na
+    _ny_was := false
+
+// Active session range
+sess_high = is_asia ? nz(_asia_h, na) : is_london ? nz(_lon_h, na) : is_ny ? nz(_ny_h, na) : na
+sess_low  = is_asia ? nz(_asia_l, na) : is_london ? nz(_lon_l, na) : is_ny ? nz(_ny_l, na) : na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIQUIDITY DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+// Liquidity sweep: wick beyond a level + close back inside → stop hunt
+
+var array<float> pool_highs = array.new_float(0)  // bear-pool (highs — short stops above)
+var array<float> pool_lows  = array.new_float(0)  // bull-pool (lows  — long stops below)
+int max_pools = 8
+
+// Register new pivots as liquidity pools
+if not na(ph_raw) and i_liq_on
+    if array.size(pool_highs) >= max_pools
+        array.shift(pool_highs)
+    array.push(pool_highs, ph_raw)
+
+if not na(pl_raw) and i_liq_on
+    if array.size(pool_lows) >= max_pools
+        array.shift(pool_lows)
+    array.push(pool_lows, pl_raw)
+
+// Detect sweep
+sweep_bull   = false
+sweep_bear   = false
+var float swept_low  = na
+var float swept_high = na
+
+if i_liq_on
+    for idx = 0 to math.max(0, array.size(pool_lows) - 1)
+        lvl = array.get(pool_lows, idx)
+        tol = lvl * i_sweep_tol
+        if low < lvl - tol and close > lvl   // wick below, closed above
+            sweep_bull  := true
+            swept_low   := lvl
+
+    for idx = 0 to math.max(0, array.size(pool_highs) - 1)
+        lvl = array.get(pool_highs, idx)
+        tol = lvl * i_sweep_tol
+        if high > lvl + tol and close < lvl  // wick above, closed below
+            sweep_bear  := true
+            swept_high  := lvl
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RANGE DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+range_lb   = 20
+range_hi   = ta.highest(high, range_lb)
+range_lo   = ta.lowest(low,   range_lb)
+range_mid  = (range_hi + range_lo) / 2.0
+range_atr  = atr_val > 0 ? (range_hi - range_lo) / atr_val : 0.0
+is_ranging = range_atr < 3.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BREAKOUT ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Select resistance/support based on breakout source
+f_res() =>
+    switch i_bo_src
+        "Session Level" => nz(sess_high, pdh)
+        "Swing Level"   => last_ph
+        "Range Level"   => range_hi
+        "Prev Day"      => pdh
+        =>               na(last_ph) ? pdh : last_ph
+
+f_sup() =>
+    switch i_bo_src
+        "Session Level" => nz(sess_low, pdl)
+        "Swing Level"   => last_pl
+        "Range Level"   => range_lo
+        "Prev Day"      => pdl
+        =>               na(last_pl) ? pdl : last_pl
+
+res_level = f_res()
+sup_level = f_sup()
+
+bull_bo = i_bo_on and not na(res_level) and close > res_level and close[1] <= res_level[1]
+bear_bo = i_bo_on and not na(sup_level) and close < sup_level and close[1] >= sup_level[1]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DISPLACEMENT ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+body_size  = math.abs(close - open)
+body_ratio = atr_val > 0 ? body_size / atr_val : 0.0
+hl_range   = math.max(high - low, syminfo.mintick)
+
+bull_close_loc = (close - low) / hl_range * 100.0
+bear_close_loc = (high - close) / hl_range * 100.0
+
+is_bull_disp = body_ratio >= i_disp_ratio and close > open and bull_close_loc >= i_disp_close
+is_bear_disp = body_ratio >= i_disp_ratio and close < open and bear_close_loc >= i_disp_close
+
+disp_class = body_ratio >= 2.0 ? "EXTREME" : body_ratio >= 1.5 ? "STRONG" :
+             body_ratio >= 0.75 ? "NORMAL" : "WEAK"
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILTERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Volume
+vol_class = vol_ratio >= 3.0 ? "EXTREME" : vol_ratio >= 1.5 ? "HIGH" :
+            vol_ratio >= 1.0 ? "NORMAL" : "LOW"
+vol_ok_bull = switch i_vol_mode
+    "Required"     => vol_ratio >= i_vol_ratio
+    "Confirmation" => vol_ratio >= i_vol_ratio
+    => true
+vol_ok_bear = vol_ok_bull
+
+// Volatility
+atr_rel   = atr_hist_avg > 0 ? atr_val / atr_hist_avg : 1.0
+atr_class = atr_rel >= 2.5 ? "EXTREME" : atr_rel >= 1.5 ? "HIGH" :
+            atr_rel >= 0.5 ? "NORMAL" : "LOW"
+vol_filter_ok = switch i_vol_filter
+    "Off"               => true
+    "Reject Extreme Low"  => atr_rel >= 0.4
+    "Reject Extreme High" => atr_rel <= 2.5
+    "Reject Both"         => atr_rel >= 0.4 and atr_rel <= 2.5
+    => true
+
+// Trend
+trend_bull_ok = switch i_trend_mode
+    "EMA 20/50"        => close > ema_fast_val and ema_fast_val > ema_slow_val
+    "EMA 50/200"       => close > ema_slow_val and ema_fast_val > ema_slow_val
+    "Market Structure" => chart_bull or htf_bull
+    "VWAP"             => close > vwap_val
+    => true
+trend_bear_ok = switch i_trend_mode
+    "EMA 20/50"        => close < ema_fast_val and ema_fast_val < ema_slow_val
+    "EMA 50/200"       => close < ema_slow_val and ema_fast_val < ema_slow_val
+    "Market Structure" => chart_bear or htf_bear
+    "VWAP"             => close < vwap_val
+    => true
+
+// RSI
+rsi_bull_ok = switch i_rsi_mode
+    "Momentum Confirmation" => rsi_val > i_rsi_bull
+    "Avoid Extremes"        => rsi_val > 30 and rsi_val < 70
+    => true
+rsi_bear_ok = switch i_rsi_mode
+    "Momentum Confirmation" => rsi_val < i_rsi_bear
+    "Avoid Extremes"        => rsi_val > 30 and rsi_val < 70
+    => true
+
+// MACD
+macd_bull_ok = switch i_macd_mode
+    "Histogram Direction" => macd_hist > macd_hist[1]
+    "Line > Signal"       => macd_line > macd_sig_line
+    => true
+macd_bear_ok = switch i_macd_mode
+    "Histogram Direction" => macd_hist < macd_hist[1]
+    "Line > Signal"       => macd_line < macd_sig_line
+    => true
+
+// VWAP filter
+vwap_bull_ok = i_vwap_mode == "Off" or close > vwap_val
+vwap_bear_ok = i_vwap_mode == "Off" or close < vwap_val
+
+// Fibonacci zone filter
+f_in_fib_zone(entry_p, swing_lo, swing_hi, is_long_dir) =>
+    if not i_fib_on or na(swing_lo) or na(swing_hi)
+        true
+    else
+        range_f = swing_hi - swing_lo
+        f382 = swing_hi - range_f * 0.382
+        f500 = swing_hi - range_f * 0.500
+        f618 = swing_hi - range_f * 0.618
+        f705 = swing_hi - range_f * 0.705
+        f786 = swing_hi - range_f * 0.786
+        tol  = range_f * 0.02
+        in618 = math.abs(entry_p - f618) <= tol
+        in705 = math.abs(entry_p - f705) <= tol
+        in786 = math.abs(entry_p - f786) <= tol
+        in382 = math.abs(entry_p - f382) <= tol
+        in500 = math.abs(entry_p - f500) <= tol
+        result = switch i_fib_zones
+            "0.618 only"           => in618
+            "0.618 + 0.705"        => in618 or in705
+            "0.618 + 0.705 + 0.786" => in618 or in705 or in786
+            "0.382 + 0.5 + 0.618" => in382 or in500 or in618
+            => in618 or in705
+        result
+
+fib_bull_ok = f_in_fib_zone(close, last_pl, last_ph, true)
+fib_bear_ok = f_in_fib_zone(close, last_pl, last_ph, false)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FVG DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Bullish FVG: low[0] > high[2]  → gap between current low and 2-bar-ago high
+bull_fvg_now = i_fvg_on and low > high[2]
+bear_fvg_now = i_fvg_on and high < low[2]
+
+bull_fvg_top = bull_fvg_now ? low     : float(na)
+bull_fvg_bot = bull_fvg_now ? high[2] : float(na)
+bull_fvg_mid = bull_fvg_now ? (low + high[2]) / 2.0 : float(na)
+
+bear_fvg_top = bear_fvg_now ? low[2]  : float(na)
+bear_fvg_bot = bear_fvg_now ? high    : float(na)
+bear_fvg_mid = bear_fvg_now ? (low[2] + high) / 2.0 : float(na)
+
+var FVGLevel last_bull_fvg = FVGLevel.new()
+var FVGLevel last_bear_fvg = FVGLevel.new()
+
+if bull_fvg_now
+    last_bull_fvg := FVGLevel.new(bull_fvg_top, bull_fvg_bot, bull_fvg_mid, false, bar_index)
+
+if bear_fvg_now
+    last_bear_fvg := FVGLevel.new(bear_fvg_top, bear_fvg_bot, bear_fvg_mid, false, bar_index)
+
+// Mark FVG filled
+if not na(last_bull_fvg.top) and low <= last_bull_fvg.bot
+    last_bull_fvg.filled := true
+if not na(last_bear_fvg.bot) and high >= last_bear_fvg.top
+    last_bear_fvg.filled := true
+
+// FVG entry condition
+fvg_bull_ok = not i_fvg_on or
+    (not last_bull_fvg.filled and not na(last_bull_fvg.mid) and
+     (i_fvg_mode == "FVG Creation"       ? bull_fvg_now :
+      i_fvg_mode == "FVG Midpoint Retest" ? (low <= last_bull_fvg.mid and high >= last_bull_fvg.bot) :
+                                             (low <= last_bull_fvg.top and high >= last_bull_fvg.bot)))
+
+fvg_bear_ok = not i_fvg_on or
+    (not last_bear_fvg.filled and not na(last_bear_fvg.mid) and
+     (i_fvg_mode == "FVG Creation"       ? bear_fvg_now :
+      i_fvg_mode == "FVG Midpoint Retest" ? (high >= last_bear_fvg.mid and low <= last_bear_fvg.top) :
+                                             (high >= last_bear_fvg.bot and low <= last_bear_fvg.top)))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNAL SCORING ENGINE
+// Scores are RULE-BASED counts only. They are NOT probabilities.
+// A score of 12/16 does not mean 75% win rate.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bull_score = 0
+bear_score = 0
+
+// HTF bias aligned (+2)
+bull_score += htf_bull ? 2 : 0
+bear_score += htf_bear ? 2 : 0
+
+// Chart structure aligned (+2)
+bull_score += chart_bull ? 2 : 0
+bear_score += chart_bear ? 2 : 0
+
+// Liquidity sweep (+2)
+bull_score += sweep_bull ? 2 : 0
+bear_score += sweep_bear ? 2 : 0
+
+// Breakout or BOS (+2)
+bull_score += (bull_bo or bos_bull) ? 2 : 0
+bear_score += (bear_bo or bos_bear) ? 2 : 0
+
+// Strong displacement (+2)
+bull_score += (is_bull_disp and (bull_bo or bos_bull)) ? 2 : 0
+bear_score += (is_bear_disp and (bear_bo or bos_bear)) ? 2 : 0
+
+// Volume confirmation (+1)
+bull_score += vol_ratio >= i_vol_ratio ? 1 : 0
+bear_score += vol_ratio >= i_vol_ratio ? 1 : 0
+
+// Trend confirmation (+1)
+bull_score += trend_bull_ok ? 1 : 0
+bear_score += trend_bear_ok ? 1 : 0
+
+// VWAP (+1)
+bull_score += close > vwap_val ? 1 : 0
+bear_score += close < vwap_val ? 1 : 0
+
+// RSI (+1)
+bull_score += rsi_val > i_rsi_bull ? 1 : 0
+bear_score += rsi_val < i_rsi_bear ? 1 : 0
+
+// MACD (+1)
+bull_score += macd_hist > 0 ? 1 : 0
+bear_score += macd_hist < 0 ? 1 : 0
+
+// FVG (+1)
+bull_score += (i_fvg_on and fvg_bull_ok) ? 1 : 0
+bear_score += (i_fvg_on and fvg_bear_ok) ? 1 : 0
+
+// Session (+1)
+bull_score += in_session ? 1 : 0
+bear_score += in_session ? 1 : 0
+
+score_max = 16
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE MANAGEMENT STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var int   trades_today   = 0
+var int   consec_loss    = 0
+var float daily_loss_pct = 0.0
+var bool  daily_halt     = false
+var int   last_trade_bar = -999
+var int   _prev_day      = dayofmonth
+
+if dayofmonth != _prev_day
+    trades_today   := 0
+    daily_loss_pct := 0.0
+    daily_halt     := false
+    _prev_day      := dayofmonth
+
+can_trade = not daily_halt              and
+            trades_today < i_max_day    and
+            consec_loss  < i_max_closs  and
+            in_session                  and
+            vol_filter_ok               and
+            bar_index - last_trade_bar >= i_cooldown
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTRY MODEL EVALUATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var bool  pend_long  = false;  var bool  pend_short = false
+var float pend_lev_l = na;     var float pend_lev_s = na
+var int   pend_bar_l = 0;      var int   pend_bar_s = 0
+var float pend_sl_l  = na;     var float pend_sl_s  = na
+
+// Expire pending setups
+if pend_long  and bar_index - pend_bar_l > i_setup_age
+    pend_long  := false
+if pend_short and bar_index - pend_bar_s > i_setup_age
+    pend_short := false
+
+bull_trigger = false
+bear_trigger = false
+
+if i_entry_model == "A: Breakout Close"
+    bull_trigger := bull_bo and bull_score >= i_min_score and vol_ok_bull and
+                    (not i_disp_on or is_bull_disp)
+    bear_trigger := bear_bo and bear_score >= i_min_score and vol_ok_bear and
+                    (not i_disp_on or is_bear_disp)
+
+else if i_entry_model == "B: Breakout + Retest" or i_entry_model == "E: Breakout + Vol + Retest"
+    vol_gate = i_entry_model == "E: Breakout + Vol + Retest" ? vol_ratio >= i_vol_ratio : true
+    // Stage 1: prime the setup
+    if bull_bo and bull_score >= i_min_score and vol_gate
+        pend_long  := true
+        pend_lev_l := close
+        pend_bar_l := bar_index
+        pend_sl_l  := na(last_pl) ? close * (1 - i_sl_fixed) : last_pl
+    if bear_bo and bear_score >= i_min_score and vol_gate
+        pend_short := true
+        pend_lev_s := close
+        pend_bar_s := bar_index
+        pend_sl_s  := na(last_ph) ? close * (1 + i_sl_fixed) : last_ph
+    // Stage 2: retest
+    if pend_long and bar_index > pend_bar_l
+        zt = pend_lev_l * (1 + i_retest_tol)
+        zb = pend_lev_l * (1 - i_retest_tol)
+        bull_trigger := low <= zt and high >= zb and close >= pend_lev_l and
+                        close > open and (not i_disp_on or is_bull_disp) and
+                        bull_score >= i_min_score
+        if bull_trigger
+            pend_long := false
+    if pend_short and bar_index > pend_bar_s
+        zt = pend_lev_s * (1 + i_retest_tol)
+        zb = pend_lev_s * (1 - i_retest_tol)
+        bear_trigger := high >= zb and low <= zt and close <= pend_lev_s and
+                        close < open and (not i_disp_on or is_bear_disp) and
+                        bear_score >= i_min_score
+        if bear_trigger
+            pend_short := false
+
+else if i_entry_model == "C: Sweep → BOS → Retest"
+    bull_trigger := sweep_bull and bos_bull and bull_score >= i_min_score and
+                    (not i_disp_on or is_bull_disp)
+    bear_trigger := sweep_bear and bos_bear and bear_score >= i_min_score and
+                    (not i_disp_on or is_bear_disp)
+
+else if i_entry_model == "D: Sweep → Disp → FVG"
+    bull_trigger := sweep_bull and is_bull_disp and fvg_bull_ok and bull_score >= i_min_score
+    bear_trigger := sweep_bear and is_bear_disp and fvg_bear_ok and bear_score >= i_min_score
+
+// Final gate: all enabled filters
+long_signal = bull_trigger and can_trade and
+    trend_bull_ok and rsi_bull_ok and macd_bull_ok and vwap_bull_ok and fib_bull_ok and
+    (not i_fvg_on or fvg_bull_ok) and
+    (i_single_tf or htf_bull)
+
+short_signal = bear_trigger and can_trade and
+    trend_bear_ok and rsi_bear_ok and macd_bear_ok and vwap_bear_ok and fib_bear_ok and
+    (not i_fvg_on or fvg_bear_ok) and
+    (i_single_tf or htf_bear)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNAL EXECUTION — SL / TP / POSITION SIZE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var float sig_entry  = na
+var float sig_sl     = na
+var float sig_tp1    = na
+var float sig_tp2    = na
+var float sig_tp3    = na
+var float sig_tp4    = na
+var bool  sig_long   = false
+var int   sig_score  = 0
+var bool  in_trade   = false
+var bool  tp1_done   = false
+
+// Active-trade line handles
+var line  ln_sl  = na
+var line  ln_tp1 = na
+var line  ln_tp2 = na
+var line  ln_tp3 = na
+var line  ln_tp4 = na
+
+// Performance accumulators
+var int   perf_trades  = 0
+var int   perf_wins    = 0
+var int   perf_losses  = 0
+var float perf_total_r = 0.0
+var float perf_win_r   = 0.0
+var float perf_loss_r  = 0.0
+var float perf_equity  = i_account
+var float perf_peak    = i_account
+var float perf_max_dd  = 0.0
+var int   perf_max_cl  = 0
+
+f_open_trade(is_long) =>
+    sl_p = is_long ?
+        f_sl_long(last_pl, swept_low,  atr_val, close) :
+        f_sl_short(last_ph, swept_high, atr_val, close)
+    // Leverage guard
+    risk    = math.abs(close - sl_p)
+    pos     = risk > 0 ? (i_account * i_risk_pct) / risk : 0.0
+    notional= pos * close
+    lev     = notional / i_account
+    if lev > i_max_lev
+        // Signal blocked: would exceed max leverage
+        [float(na), float(na), float(na), float(na), float(na), float(na)]
+    else
+        tp1_p = f_tp(close, sl_p, i_tp1_r, is_long)
+        tp2_p = f_tp(close, sl_p, i_tp2_r, is_long)
+        tp3_p = f_tp(close, sl_p, i_tp3_r, is_long)
+        tp4_p = f_tp(close, sl_p, i_tp4_r, is_long)
+        [sl_p, tp1_p, tp2_p, tp3_p, tp4_p, lev]
+
+if long_signal and not in_trade
+    [sl_p, tp1_p, tp2_p, tp3_p, tp4_p, lev_p] = f_open_trade(true)
+    if not na(sl_p)
+        sig_entry := close
+        sig_sl    := sl_p
+        sig_tp1   := tp1_p
+        sig_tp2   := tp2_p
+        sig_tp3   := tp3_p
+        sig_tp4   := tp4_p
+        sig_long  := true
+        sig_score := bull_score
+        in_trade  := true
+        tp1_done  := false
+        trades_today    += 1
+        last_trade_bar  := bar_index
+        perf_trades     += 1
+        pend_long := false
+        if i_show_tpsl
+            if not na(ln_sl)
+                line.delete(ln_sl)
+            if not na(ln_tp1)
+                line.delete(ln_tp1)
+            if not na(ln_tp2)
+                line.delete(ln_tp2)
+            if not na(ln_tp3)
+                line.delete(ln_tp3)
+            if not na(ln_tp4)
+                line.delete(ln_tp4)
+            ln_sl  := line.new(bar_index, sig_sl,  bar_index + 60, sig_sl,  color=color.new(c_bear, 20), width=1, style=line.style_dashed)
+            ln_tp1 := line.new(bar_index, sig_tp1, bar_index + 60, sig_tp1, color=color.new(c_bull, 60), width=1, style=line.style_dotted)
+            ln_tp2 := line.new(bar_index, sig_tp2, bar_index + 60, sig_tp2, color=color.new(c_bull, 40), width=1, style=line.style_dotted)
+            ln_tp3 := line.new(bar_index, sig_tp3, bar_index + 60, sig_tp3, color=color.new(c_bull, 20), width=1, style=line.style_dotted)
+            ln_tp4 := line.new(bar_index, sig_tp4, bar_index + 60, sig_tp4, color=color.new(c_bull,  0), width=1, style=line.style_dotted)
+
+if short_signal and not in_trade
+    [sl_p, tp1_p, tp2_p, tp3_p, tp4_p, lev_p] = f_open_trade(false)
+    if not na(sl_p)
+        sig_entry := close
+        sig_sl    := sl_p
+        sig_tp1   := tp1_p
+        sig_tp2   := tp2_p
+        sig_tp3   := tp3_p
+        sig_tp4   := tp4_p
+        sig_long  := false
+        sig_score := bear_score
+        in_trade  := true
+        tp1_done  := false
+        trades_today    += 1
+        last_trade_bar  := bar_index
+        perf_trades     += 1
+        pend_short := false
+        if i_show_tpsl
+            if not na(ln_sl)
+                line.delete(ln_sl)
+            if not na(ln_tp1)
+                line.delete(ln_tp1)
+            if not na(ln_tp2)
+                line.delete(ln_tp2)
+            if not na(ln_tp3)
+                line.delete(ln_tp3)
+            if not na(ln_tp4)
+                line.delete(ln_tp4)
+            ln_sl  := line.new(bar_index, sig_sl,  bar_index + 60, sig_sl,  color=color.new(c_bull, 20), width=1, style=line.style_dashed)
+            ln_tp1 := line.new(bar_index, sig_tp1, bar_index + 60, sig_tp1, color=color.new(c_bear, 60), width=1, style=line.style_dotted)
+            ln_tp2 := line.new(bar_index, sig_tp2, bar_index + 60, sig_tp2, color=color.new(c_bear, 40), width=1, style=line.style_dotted)
+            ln_tp3 := line.new(bar_index, sig_tp3, bar_index + 60, sig_tp3, color=color.new(c_bear, 20), width=1, style=line.style_dotted)
+            ln_tp4 := line.new(bar_index, sig_tp4, bar_index + 60, sig_tp4, color=color.new(c_bear,  0), width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE OUTCOME TRACKING (simplified simulation — TP1 or SL)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if in_trade and not na(sig_sl)
+    hit_sl  = sig_long ? low  <= sig_sl  : high >= sig_sl
+    hit_tp1 = sig_long ? high >= sig_tp1 : low  <= sig_tp1
+
+    // TP1 hit first: partial exit, move SL to breakeven
+    if hit_tp1 and not tp1_done
+        tp1_done := true
+        if i_be_on
+            sig_sl := sig_entry  // move SL to breakeven
+
+    // SL hit
+    if hit_sl
+        r_val = -1.0
+        perf_losses  += 1
+        perf_total_r += r_val
+        perf_loss_r  += r_val
+        consec_loss  += 1
+        perf_max_cl  := math.max(perf_max_cl, consec_loss)
+        daily_loss_pct += i_risk_pct
+        perf_equity    -= i_account * i_risk_pct
+        if perf_equity < perf_peak
+            dd = (perf_peak - perf_equity) / perf_peak * 100.0
+            perf_max_dd := math.max(perf_max_dd, dd)
+        if daily_loss_pct >= i_day_loss
+            daily_halt := true
+        in_trade  := false
+        sig_entry := na;  sig_sl  := na
+        sig_tp1   := na;  sig_tp2 := na
+        sig_tp3   := na;  sig_tp4 := na
+
+    // TP1 done + full TP2/TP3/TP4 (simplified: track TP2 as full exit)
+    else if tp1_done
+        hit_tp2 = sig_long ? high >= sig_tp2 : low <= sig_tp2
+        if hit_tp2
+            r_val = i_tp2_r
+            perf_wins    += 1
+            perf_total_r += r_val
+            perf_win_r   += r_val
+            consec_loss  := 0
+            perf_equity  += i_account * i_risk_pct * i_tp2_r
+            perf_peak    := math.max(perf_peak, perf_equity)
+            in_trade  := false
+            sig_entry := na;  sig_sl  := na
+            sig_tp1   := na;  sig_tp2 := na
+            sig_tp3   := na;  sig_tp4 := na
+
+// Trailing stop
+if in_trade and i_trail_mode != "Off"
+    new_sl = sig_sl
+    if i_trail_mode == "ATR Trail"
+        new_sl := sig_long ? close - atr_val * i_trail_atr : close + atr_val * i_trail_atr
+    else if i_trail_mode == "Swing Trail"
+        new_sl := sig_long ? nz(last_pl, sig_sl) : nz(last_ph, sig_sl)
+    else if i_trail_mode == "Breakeven"
+        new_sl := sig_long ? math.max(sig_sl, sig_entry) : math.min(sig_sl, sig_entry)
+    if sig_long
+        sig_sl := math.max(sig_sl, new_sl)
+    else
+        sig_sl := math.min(sig_sl, new_sl)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE SUMMARY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+win_rate    = perf_trades > 0 ? perf_wins   / perf_trades * 100.0 : 0.0
+avg_r       = perf_trades > 0 ? perf_total_r / perf_trades : 0.0
+avg_win_r   = perf_wins   > 0 ? perf_win_r  / perf_wins   : 0.0
+avg_loss_r  = perf_losses > 0 ? perf_loss_r / perf_losses  : 0.0
+prof_factor = perf_losses > 0 and perf_loss_r != 0.0 ?
+    math.abs(perf_win_r / perf_loss_r) : float(na)
+expectancy  = perf_trades > 0 ?
+    (win_rate / 100.0) * avg_win_r + (1 - win_rate / 100.0) * avg_loss_r : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POSITION SIZE DISPLAY (for current signal)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+_sl_dist   = in_trade and not na(sig_sl) ? math.abs(sig_entry - sig_sl) : float(na)
+_pos_size  = not na(_sl_dist) and _sl_dist > 0 ? (i_account * i_risk_pct) / _sl_dist : float(na)
+_notional  = not na(_pos_size) ? _pos_size * sig_entry : float(na)
+_eff_lev   = not na(_notional) ? _notional / i_account : float(na)
+_stop_pct  = in_trade and not na(sig_sl) and not na(sig_entry) ?
+    math.abs(sig_entry - sig_sl) / sig_entry * 100.0 : float(na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table dash = table.new(position.top_right, 2, 28,
+    bgcolor=color.new(color.black, 72),
+    border_color=color.new(color.gray, 60), border_width=1,
+    frame_color=color.new(color.gray, 40), frame_width=1)
+
+if i_show_dash and barstate.islast
+    htf_str  = htf_bull ? "▲ BULLISH" : htf_bear ? "▼ BEARISH" : "◆ NEUTRAL"
+    htf_col  = htf_bull ? c_bull : htf_bear ? c_bear : c_neutral
+    str_str  = chart_bull ? "▲ BULLISH" : chart_bear ? "▼ BEARISH" : "◆ NEUTRAL"
+    str_col  = chart_bull ? c_bull : chart_bear ? c_bear : c_neutral
+    ses_str  = is_asia ? "ASIA" : (is_london and is_ny) ? "LON + NY" :
+               is_london ? "LONDON" : is_ny ? "NEW YORK" : "OFF-HOURS"
+    vol_s    = vol_class
+    vl_col   = vol_ratio >= i_vol_ratio ? c_bull : c_neutral
+    atr_s    = atr_class
+    at_col   = vol_filter_ok ? c_bull : color.orange
+    bs_str   = str.tostring(bull_score) + " / " + str.tostring(score_max)
+    bs_col   = bull_score >= i_min_score ? c_bull : c_neutral
+    be_str   = str.tostring(bear_score) + " / " + str.tostring(score_max)
+    be_col   = bear_score >= i_min_score ? c_bear : c_neutral
+    stat_str = in_trade ? (sig_long ? "▲ LONG" : "▼ SHORT") :
+               can_trade ? "● WAITING" : "✕ NO TRADE"
+    stat_col = in_trade ? (sig_long ? c_bull : c_bear) :
+               can_trade ? color.yellow : color.orange
+
+    // Header
+    table.cell(dash, 0, 0, "STRUCTURAL EDGE",
+        text_color=color.white, text_size=size.small,
+        text_halign=text.align_center, bgcolor=color.new(color.navy, 30))
+    table.cell(dash, 1, 0, syminfo.ticker + " " + timeframe.period,
+        text_color=color.white, text_size=size.small,
+        text_halign=text.align_center, bgcolor=color.new(color.navy, 30))
+
+    f_cell(dash,  1, "HTF BIAS",    htf_str,  htf_col)
+    f_cell(dash,  2, "STRUCTURE",   str_str,  str_col)
+    f_cell(dash,  3, "SESSION",     ses_str,  color.white)
+    f_cell(dash,  4, "VOLUME",      vol_s,    vl_col)
+    f_cell(dash,  5, "VOLATILITY",  atr_s,    at_col)
+    f_cell(dash,  6, "BULL SCORE",  bs_str,   bs_col)
+    f_cell(dash,  7, "BEAR SCORE",  be_str,   be_col)
+    f_cell(dash,  8, "STATUS",      stat_str, stat_col)
+    f_cell(dash,  9, "ENTRY",       in_trade ? str.tostring(sig_entry, format.mintick) : "—", color.white)
+    f_cell(dash, 10, "SL",          in_trade ? str.tostring(sig_sl,    format.mintick) : "—", c_bear)
+    f_cell(dash, 11, "TP1",         in_trade ? str.tostring(sig_tp1,   format.mintick) : "—", c_bull)
+    f_cell(dash, 12, "TP2",         in_trade ? str.tostring(sig_tp2,   format.mintick) : "—", color.new(c_bull, 20))
+    f_cell(dash, 13, "TP3",         in_trade ? str.tostring(sig_tp3,   format.mintick) : "—", color.new(c_bull, 40))
+    f_cell(dash, 14, "TP4",         in_trade ? str.tostring(sig_tp4,   format.mintick) : "—", color.new(c_bull, 60))
+    f_cell(dash, 15, "STOP %",      na(_stop_pct)  ? "—" : str.tostring(_stop_pct,  "#.##") + "%", color.white)
+    f_cell(dash, 16, "POS SIZE",    na(_pos_size)  ? "—" : str.tostring(_pos_size,  "#.####"),      color.white)
+    f_cell(dash, 17, "NOTIONAL",    na(_notional)  ? "—" : "$" + str.tostring(_notional, "#"),      color.white)
+    f_cell(dash, 18, "LEVERAGE",    na(_eff_lev)   ? "—" : str.tostring(_eff_lev,   "#.#") + "x",  _eff_lev > i_max_lev ? c_bear : c_bull)
+    // Performance section
+    f_cell(dash, 19, "── PERFORMANCE ──", "", color.new(color.gray, 30))
+    f_cell(dash, 20, "TRADES",      str.tostring(perf_trades),                 color.white)
+    f_cell(dash, 21, "WIN RATE",    str.tostring(win_rate, "#.#") + "%",       win_rate >= 50 ? c_bull : color.orange)
+    f_cell(dash, 22, "NET R",       str.tostring(perf_total_r, "#.##") + "R",  perf_total_r >= 0 ? c_bull : c_bear)
+    f_cell(dash, 23, "PROF FACTOR", na(prof_factor) ? "N/A" : str.tostring(prof_factor, "#.##"),
+        na(prof_factor) or prof_factor < 1.0 ? color.orange : c_bull)
+    f_cell(dash, 24, "AVG R",       str.tostring(avg_r, "#.##"),               avg_r >= 0 ? c_bull : c_bear)
+    f_cell(dash, 25, "EXPECTANCY",  str.tostring(expectancy, "#.###"),         expectancy >= 0 ? c_bull : c_bear)
+    f_cell(dash, 26, "MAX DD",      str.tostring(perf_max_dd, "#.##") + "%",   perf_max_dd < 10 ? c_bull : perf_max_dd < 20 ? color.orange : c_bear)
+    f_cell(dash, 27, "MAX C.LOSS",  str.tostring(perf_max_cl),                 perf_max_cl <= 2 ? c_bull : color.orange)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLOTTING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Signal labels
+if long_signal
+    lbl = "▲ LONG" + (i_show_score ? "  [" + str.tostring(bull_score) + "]" : "")
+    label.new(bar_index, low - atr_val * 0.8, lbl,
+        color=c_bull, textcolor=color.white, size=size.normal,
+        style=label.style_label_up, yloc=yloc.price)
+
+if short_signal
+    lbl = "▼ SHORT" + (i_show_score ? "  [" + str.tostring(bear_score) + "]" : "")
+    label.new(bar_index, high + atr_val * 0.8, lbl,
+        color=c_bear, textcolor=color.white, size=size.normal,
+        style=label.style_label_down, yloc=yloc.price)
+
+// Liquidity sweep markers
+if sweep_bull
+    label.new(bar_index, low, "⚡ LIQ ↑",
+        color=color.new(c_bull, 70), textcolor=c_bull, size=size.tiny,
+        style=label.style_label_up, yloc=yloc.price)
+
+if sweep_bear
+    label.new(bar_index, high, "⚡ LIQ ↓",
+        color=color.new(c_bear, 70), textcolor=c_bear, size=size.tiny,
+        style=label.style_label_down, yloc=yloc.price)
+
+// BOS
+if i_show_bos
+    if bos_bull
+        label.new(bar_index, high, "BOS ▲",
+            color=color.new(c_bull, 75), textcolor=c_bull, size=size.tiny,
+            style=label.style_label_down, yloc=yloc.price)
+    if bos_bear
+        label.new(bar_index, low, "BOS ▼",
+            color=color.new(c_bear, 75), textcolor=c_bear, size=size.tiny,
+            style=label.style_label_up, yloc=yloc.price)
+
+// HH / HL / LH / LL — placed at the confirmed pivot bar (non-repainting)
+if i_show_struct
+    if not na(ph_raw)
+        ph_label = is_hh ? "HH" : is_lh ? "LH" : "PH"
+        ph_col   = is_hh ? c_bull : c_bear
+        label.new(bar_index - i_pivot_len, high[i_pivot_len], ph_label,
+            color=color.new(ph_col, 75), textcolor=ph_col,
+            size=size.tiny, style=label.style_label_down, yloc=yloc.price)
+    if not na(pl_raw)
+        pl_label = is_hl ? "HL" : is_ll ? "LL" : "PL"
+        pl_col   = is_hl ? c_bull : c_bear
+        label.new(bar_index - i_pivot_len, low[i_pivot_len], pl_label,
+            color=color.new(pl_col, 75), textcolor=pl_col,
+            size=size.tiny, style=label.style_label_up, yloc=yloc.price)
+
+// Key level lines (drawn once per bar on the last bar to keep count low)
+if i_show_kl and barstate.islast
+    if i_show_pdhl
+        if not na(pdh)
+            line.new(bar_index - 100, pdh, bar_index + 10, pdh,
+                color=color.new(color.yellow, 55), width=1, style=line.style_dashed)
+        if not na(pdl)
+            line.new(bar_index - 100, pdl, bar_index + 10, pdl,
+                color=color.new(color.yellow, 55), width=1, style=line.style_dashed)
+    if i_show_pwhl
+        if not na(pwh)
+            line.new(bar_index - 200, pwh, bar_index + 10, pwh,
+                color=color.new(color.purple, 50), width=1, style=line.style_dashed)
+        if not na(pwl)
+            line.new(bar_index - 200, pwl, bar_index + 10, pwl,
+                color=color.new(color.purple, 50), width=1, style=line.style_dashed)
+
+// Session high/low lines
+if i_show_sess_hl and barstate.islast
+    if not na(asia_high_prev)
+        line.new(bar_index - 60, asia_high_prev, bar_index + 5, asia_high_prev,
+            color=color.new(color.blue, 55), width=1, style=line.style_dotted)
+    if not na(asia_low_prev)
+        line.new(bar_index - 60, asia_low_prev, bar_index + 5, asia_low_prev,
+            color=color.new(color.blue, 55), width=1, style=line.style_dotted)
+    if not na(lon_high_prev)
+        line.new(bar_index - 60, lon_high_prev, bar_index + 5, lon_high_prev,
+            color=color.new(color.green, 55), width=1, style=line.style_dotted)
+    if not na(lon_low_prev)
+        line.new(bar_index - 60, lon_low_prev, bar_index + 5, lon_low_prev,
+            color=color.new(color.green, 55), width=1, style=line.style_dotted)
+
+// Session backgrounds
+if i_show_sess_bg
+    bgcolor(is_asia   ? color.new(color.blue,   95) : na, title="Asia BG")
+    bgcolor(is_london ? color.new(color.green,  95) : na, title="London BG")
+    bgcolor(is_ny     ? color.new(color.orange, 95) : na, title="NY BG")
+
+// EMA lines
+plot(i_trend_mode == "EMA 20/50" or i_trend_mode == "EMA 50/200" ? ema_fast_val : na,
+    "EMA Fast", color=color.new(color.blue, 40), linewidth=1)
+plot(i_trend_mode == "EMA 20/50" or i_trend_mode == "EMA 50/200" ? ema_slow_val : na,
+    "EMA Slow", color=color.new(color.orange, 40), linewidth=1)
+
+// VWAP
+plot(i_show_vwap ? vwap_val : na, "VWAP",
+    color=color.new(color.white, 50), linewidth=1)
+
+// FVG boxes
+if i_show_fvg
+    if bull_fvg_now
+        box.new(bar_index - 2, bull_fvg_top, bar_index + 30, bull_fvg_bot,
+            bgcolor=color.new(c_bull, 88), border_color=color.new(c_bull, 65), border_width=1)
+    if bear_fvg_now
+        box.new(bar_index - 2, bear_fvg_top, bar_index + 30, bear_fvg_bot,
+            bgcolor=color.new(c_bear, 88), border_color=color.new(c_bear, 65), border_width=1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+_sess_tag = is_london and is_ny ? "LON+NY" : is_london ? "LONDON" : is_ny ? "NY" : is_asia ? "ASIA" : "OFF"
+_e  = str.tostring(close, format.mintick)
+_s  = in_trade and not na(sig_sl)  ? str.tostring(sig_sl,  format.mintick) : "calc"
+_t1 = in_trade and not na(sig_tp1) ? str.tostring(sig_tp1, format.mintick) : "calc"
+_t2 = in_trade and not na(sig_tp2) ? str.tostring(sig_tp2, format.mintick) : "calc"
+_sc = str.tostring(bull_score) + "/" + str.tostring(score_max)
+
+_long_msg  = "▲ LONG | " + syminfo.ticker + " " + timeframe.period +
+    " | Entry:" + _e + " SL:" + _s + " TP1:" + _t1 + " TP2:" + _t2 +
+    " | Score:" + _sc + " Session:" + _sess_tag
+
+_short_msg = "▼ SHORT | " + syminfo.ticker + " " + timeframe.period +
+    " | Entry:" + _e + " SL:" + _s + " TP1:" + _t1 + " TP2:" + _t2 +
+    " | Score:" + str.tostring(bear_score) + "/" + str.tostring(score_max) +
+    " Session:" + _sess_tag
+
+alertcondition(long_signal,   title="▲ Long Signal",     message=_long_msg)
+alertcondition(short_signal,  title="▼ Short Signal",    message=_short_msg)
+alertcondition(sweep_bull,    title="⚡ Bull Liq Sweep",  message="BULL SWEEP | " + syminfo.ticker + " | Level: " + str.tostring(nz(swept_low, close), format.mintick))
+alertcondition(sweep_bear,    title="⚡ Bear Liq Sweep",  message="BEAR SWEEP | " + syminfo.ticker + " | Level: " + str.tostring(nz(swept_high, close), format.mintick))
+alertcondition(bos_bull,      title="BOS ▲ Bullish",     message="BULL BOS | "   + syminfo.ticker + " " + timeframe.period)
+alertcondition(bos_bear,      title="BOS ▼ Bearish",     message="BEAR BOS | "   + syminfo.ticker + " " + timeframe.period)
+alertcondition(bull_bo,       title="Breakout ▲",        message="BULL BREAKOUT | " + syminfo.ticker)
+alertcondition(bear_bo,       title="Breakout ▼",        message="BEAR BREAKOUT | " + syminfo.ticker)
+alertcondition(bull_fvg_now,  title="FVG ▲ Created",     message="BULL FVG | "   + syminfo.ticker)
+alertcondition(bear_fvg_now,  title="FVG ▼ Created",     message="BEAR FVG | "   + syminfo.ticker)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// END
+// NOTE: This indicator is an experimental, rule-based research tool.
+// It does not guarantee any specific win rate, accuracy, or profit.
+// Always test independently before risking real capital.
+// ═══════════════════════════════════════════════════════════════════════════════
